@@ -1,0 +1,28 @@
+# Keep the build context small and never ship host state into the image.
+.git
+.gitignore
+.env
+.env.local
+*.md
+docs/
+
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local database + attachments must not leak into the image; they live on the
+# /data volume at runtime.
+*.db
+*.db-wal
+*.db-shm
+backend/storage/
+
+# The SPA is built inside the image by the frontend stage.
+backend/app/static/
