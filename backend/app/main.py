@@ -43,14 +43,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     supervisor = scheduler = None
     if settings.run_workers:
         try:
-            from .workers import scheduler as scheduler_module
-            from .workers import supervisor as supervisor_module
+            # Imported lazily so the API still boots without the worker package.
+            from .workers import scheduler as scheduler_singleton
+            from .workers import supervisor as supervisor_singleton
 
-            supervisor = supervisor_module.supervisor
-            scheduler = getattr(scheduler_module, "scheduler", None)
+            supervisor, scheduler = supervisor_singleton, scheduler_singleton
             await supervisor.start()
-            if scheduler is not None:
-                await scheduler.start()
+            await scheduler.start()
         except Exception:  # pragma: no cover - workers are optional at boot
             logger.exception("background workers could not be started")
 

@@ -47,25 +47,26 @@ async def _get_inbox(db: DbSession, inbox_id: int) -> Inbox:
     return inbox
 
 
-def _reload_worker(inbox_id: int) -> None:
+async def _reload_worker(inbox_id: int) -> None:
     """Tell the worker supervisor to (re)start the poller for this inbox."""
     try:
         from ...workers import supervisor
     except Exception:  # pragma: no cover - workers are optional
         return
     try:
-        supervisor.reload_inbox(inbox_id)
+        await supervisor.reload_inbox(inbox_id)
     except Exception:  # pragma: no cover - never fail an API call on this
         logger.exception("worker reload failed for inbox %s", inbox_id)
 
 
-def _remove_worker(inbox_id: int) -> None:
+async def _remove_worker(inbox_id: int) -> None:
+    """Tell the worker supervisor to stop polling a deleted inbox."""
     try:
         from ...workers import supervisor
     except Exception:  # pragma: no cover - workers are optional
         return
     try:
-        supervisor.remove_inbox(inbox_id)
+        await supervisor.remove_inbox(inbox_id)
     except Exception:  # pragma: no cover
         logger.exception("worker removal failed for inbox %s", inbox_id)
 
@@ -158,7 +159,7 @@ async def create_inbox(payload: InboxCreate, db: DbSession) -> dict:
     if payload.member_ids:
         await _set_members(db, inbox, payload.member_ids)
 
-    _reload_worker(inbox.id)
+    await _reload_worker(inbox.id)
     await bus.publish(bus.EVENT_INBOX_UPDATED, {"inbox": serialize_inbox(inbox)})
     return serialize_inbox(inbox, reveal_secrets=False)
 
@@ -183,7 +184,7 @@ async def update_inbox(inbox_id: int, payload: InboxUpdate, db: DbSession) -> di
     merged = _merge_secrets(inbox.channel_type, dict(inbox.config or {}), config or {})
     await _configure(db, inbox, merged if config is not None else dict(inbox.config or {}))
 
-    _reload_worker(inbox.id)
+    await _reload_worker(inbox.id)
     await bus.publish(bus.EVENT_INBOX_UPDATED, {"inbox": serialize_inbox(inbox)})
     return serialize_inbox(inbox, reveal_secrets=False)
 
@@ -199,7 +200,7 @@ async def delete_inbox(inbox_id: int, db: DbSession) -> None:
     finally:
         await channel.close()
 
-    _remove_worker(inbox_id)
+    await _remove_worker(inbox_id)
     await db.delete(inbox)
     await db.flush()
 
