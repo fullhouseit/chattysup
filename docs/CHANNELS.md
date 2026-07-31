@@ -102,6 +102,7 @@ async def edit_message(self, chat_source_id, message_source_id, content): ...
 async def delete_message(self, chat_source_id, message_source_id): ...
 async def mark_read(self, chat_source_id, message_source_id): ...
 async def download_file(self, external_id) -> tuple[bytes, str | None, str | None]: ...
+async def fetch_avatar(self, contact) -> tuple[bytes, str | None, str | None] | None: ...
 async def health_check(self) -> dict: ...
 async def setup(self) -> dict: ...     # e.g. register the webhook upstream
 async def teardown(self) -> None: ...  # e.g. remove it again
@@ -109,7 +110,12 @@ async def teardown(self) -> None: ...  # e.g. remove it again
 
 Advertise them in `capabilities` so the UI can hide controls the provider cannot
 honour (`reactions`, `typing`, `edit`, `delete`, `voice`, `stickers`, `media`,
-`reply`, `read_receipts`).
+`reply`, `read_receipts`, `avatars`).
+
+Implementing `fetch_avatar` (and advertising `avatars`) is enough to get contact
+pictures: the core downloads the image once per contact, stores it and serves it
+from `/api/v1/attachments/{id}/file`. Contacts without a picture are re-checked
+at most once a week, so it never costs a lookup per message.
 
 ## Where the pieces plug in
 

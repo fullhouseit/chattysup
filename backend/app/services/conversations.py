@@ -40,6 +40,7 @@ from ..models import (
 )
 from ..serializers import serialize_conversation, serialize_message
 from . import attachments as attachment_service
+from . import avatars as avatar_service
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,10 @@ REOPEN_WINDOW_HOURS = 24
 # Contacts
 # ---------------------------------------------------------------------------
 async def find_or_create_contact(
-    db: AsyncSession, inbox: Inbox, payload: NormalizedContact
+    db: AsyncSession,
+    inbox: Inbox,
+    payload: NormalizedContact,
+    channel: BaseChannel | None = None,
 ) -> tuple[Contact, ContactInbox]:
     link = await db.scalar(
         select(ContactInbox).where(
@@ -72,6 +76,9 @@ async def find_or_create_contact(
             contact.phone, changed = payload.phone, True
         if payload.meta:
             link.meta = {**(link.meta or {}), **payload.meta}
+        changed |= await avatar_service.ensure_contact_avatar(
+            db, inbox, channel, contact, link, payload
+        )
         if changed:
             await db.flush()
             await bus.publish(
@@ -101,6 +108,8 @@ async def find_or_create_contact(
     )
     db.add(link)
     await db.flush()
+
+    await avatar_service.ensure_contact_avatar(db, inbox, channel, contact, link, payload)
     return contact, link
 
 
@@ -210,10 +219,10 @@ async def process_inbound_event(
 
 
 async def _resolve_thread(
-    db: AsyncSession, inbox: Inbox, event: InboundEvent
+    db: AsyncSession, inbox: Inbox, event: InboundEvent, channel: BaseChannel | None = None
 ) -> tuple[Contact, Conversation, bool] | None:
     payload = event.contact or NormalizedContact(source_id=event.chat_source_id)
-    contact, link = await find_or_create_contact(db, inbox, payload)
+    contact, link = await find_or_create_contact(db, inbox, payload, channel)
     if contact.blocked:
         return None
     conversation, created = await find_or_create_conversation(db, inbox, contact, link)
@@ -235,7 +244,7 @@ async def _handle_inbound_message(
         if existing:  # provider redelivery — nothing to do
             return existing
 
-    resolved = await _resolve_thread(db, inbox, event)
+    resolved = await _resolve_thread(db, inbox, event, channel)
     if resolved is None:
         return None
     contact, conversation, created = resolved
@@ -372,7 +381,7 @@ async def _handle_inbound_reaction(
     if not message:
         return None
 
-    resolved = await _resolve_thread(db, inbox, event)
+    resolved = await _resolve_thread(db, inbox, event, channel)
     contact_id = resolved[0].id if resolved else None
 
     for reaction in list(message.reactions):

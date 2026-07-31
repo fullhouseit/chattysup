@@ -236,6 +236,17 @@ class BaseChannel(abc.ABC):
         """Return ``(bytes, filename, mime_type)`` for a provider file id."""
         raise NotImplementedError
 
+    async def fetch_avatar(
+        self, contact: NormalizedContact
+    ) -> tuple[bytes, str | None, str | None] | None:
+        """Return the contact's profile picture as ``(bytes, filename, mime)``.
+
+        ``None`` means the provider has no picture for this contact (or does
+        not expose one). Advertise ``"avatars"`` in :attr:`capabilities` when
+        implementing this.
+        """
+        return None
+
     # -- introspection ---------------------------------------------------
     @classmethod
     def describe(cls) -> dict[str, Any]:

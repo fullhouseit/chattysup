@@ -44,6 +44,8 @@ ALLOWED_UPDATES = [
 #: Bot API payload limits.
 MAX_TEXT_LENGTH = 4096
 MAX_CAPTION_LENGTH = 1024
+#: Smallest profile photo width worth downloading for an avatar.
+AVATAR_MIN_WIDTH = 160
 #: How long ``getUpdates`` is allowed to hold the connection open.
 POLL_TIMEOUT = 25
 
@@ -154,6 +156,7 @@ class TelegramChannel(BaseChannel):
         "stickers",
         "media",
         "reply",
+        "avatars",
     }
 
     config_fields = [
@@ -995,3 +998,43 @@ class TelegramChannel(BaseChannel):
         data = await self.api.download(file_path)
         file_name = file_path.rsplit("/", 1)[-1]
         return data, file_name, storage.guess_mime(file_name)
+
+    async def fetch_avatar(
+        self, contact: NormalizedContact
+    ) -> tuple[bytes, str | None, str | None] | None:
+        """Download the contact's Telegram profile picture, if they have one.
+
+        The Bot API exposes no public avatar URL, so the photo is fetched
+        through ``getUserProfilePhotos`` and mirrored into local storage.
+        """
+        user_id = (contact.meta or {}).get("telegram_user_id")
+        if user_id is None:
+            # Group chats key the contact by the (negative) chat id, which
+            # getUserProfilePhotos does not accept.
+            try:
+                user_id = int(contact.source_id)
+            except (TypeError, ValueError):
+                return None
+        if int(user_id) <= 0:
+            return None
+
+        photos = await self.api.call(
+            "getUserProfilePhotos", user_id=int(user_id), limit=1
+        )
+        sets = (photos or {}).get("photos") or []
+        if not sets or not sets[0]:
+            return None
+
+        # Sizes come smallest-first; a mid-size one is plenty for a 40px avatar
+        # and keeps the download small.
+        sizes = sorted(sets[0], key=lambda size: size.get("width") or 0)
+        chosen = next(
+            (size for size in sizes if (size.get("width") or 0) >= AVATAR_MIN_WIDTH),
+            sizes[-1],
+        )
+        file_id = chosen.get("file_id")
+        if not file_id:
+            return None
+
+        data, name, mime = await self.download_file(file_id)
+        return data, name or f"avatar-{user_id}.jpg", mime or "image/jpeg"

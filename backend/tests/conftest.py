@@ -182,3 +182,19 @@ async def inbox(client: AsyncClient, admin: dict[str, Any]) -> dict[str, Any]:
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+@pytest.fixture
+async def db_session() -> AsyncIterator[Any]:
+    """A session on the same in-memory database the API fixtures use."""
+    async with TestSession() as session:
+        yield session
+        await session.rollback()
+
+
+@pytest.fixture(autouse=True)
+def temp_storage(tmp_path, monkeypatch) -> None:
+    """Keep attachments and avatars written by tests out of the repository."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "storage_path", str(tmp_path / "storage"))
