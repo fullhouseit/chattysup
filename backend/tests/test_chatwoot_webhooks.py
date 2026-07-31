@@ -449,6 +449,145 @@ def test_message_webhook_data_shape(world) -> None:
     assert data["source_id"] == "tg-1"
 
 
+def test_epoch_treats_naive_datetimes_as_utc(monkeypatch) -> None:
+    """A reloaded row hands us naive datetimes; they are UTC, not host-local."""
+    import time as _time
+
+    naive = T0.replace(tzinfo=None)
+    assert chatwoot.epoch(naive) == int(T0.timestamp())
+    assert chatwoot.epoch_float(naive) == pytest.approx(T0.timestamp())
+    assert chatwoot.iso8601(naive) == "2024-05-01T12:00:00.000Z"
+
+    # …and it stays correct under a non-UTC host time zone.
+    monkeypatch.setenv("TZ", "America/New_York")
+    _time.tzset()
+    try:
+        assert chatwoot.epoch(naive) == int(T0.timestamp())
+        assert chatwoot.epoch_float(naive) == pytest.approx(T0.timestamp())
+        assert chatwoot.iso8601(naive) == "2024-05-01T12:00:00.000Z"
+    finally:
+        monkeypatch.undo()
+        _time.tzset()
+
+
+async def test_conversation_epochs_match_iso_when_rows_are_reloaded(
+    db_session, world, monkeypatch
+) -> None:
+    """The epoch block and the ISO ``created_at`` must describe the same instant."""
+    import time as _time
+
+    monkeypatch.setenv("TZ", "America/New_York")
+    _time.tzset()
+    try:
+        async with TestSession() as session:
+            conversation = await session.get(Conversation, world["conversation"].id)
+            message = await session.get(Message, world["message"].id)
+            data = chatwoot.serialize_conversation(conversation)
+            body = chatwoot.serialize_message(message)
+    finally:
+        monkeypatch.undo()
+        _time.tzset()
+
+    assert data["created_at"] == int(T0.timestamp())
+    assert data["last_activity_at"] == data["timestamp"] == int(T1.timestamp())
+    assert data["updated_at"] == pytest.approx(T1.timestamp())
+    assert data["waiting_since"] == int(T0.timestamp())
+    assert body["created_at"] == "2024-05-01T12:05:00.123Z"
+
+
+def test_nested_message_sender_is_the_messages_own_sender(world) -> None:
+    """Chatwoot uses ``message.sender``; the assignee is not a stand-in."""
+    other = User(
+        id=4242, email="sam@example.com", name="Other Agent", role="agent",
+        created_at=T0, updated_at=T0,
+    )
+    reply = Message(
+        id=999,
+        conversation_id=world["conversation"].id,
+        inbox_id=world["inbox"].id,
+        content="on it",
+        message_type=MessageType.OUTGOING.value,
+        sender_type=SenderType.USER.value,
+        sender_id=other.id,
+        created_at=T1,
+        updated_at=T1,
+    )
+    data = chatwoot.serialize_conversation(
+        world["conversation"], last_message=reply, last_message_sender=other
+    )
+    nested = data["messages"][0]
+    assert nested["sender_id"] == other.id
+    assert nested["sender"]["id"] == other.id
+    assert nested["sender"]["name"] == "Other Agent"
+
+    # Without an explicit sender the assignee is used only when its id matches;
+    # a non-assignee author is never misattributed.
+    fallback = chatwoot.serialize_conversation(
+        world["conversation"], last_message=reply
+    )["messages"][0]
+    assert "sender" not in fallback
+
+    reply.sender_id = world["agent"].id
+    matched = chatwoot.serialize_conversation(
+        world["conversation"], last_message=reply
+    )["messages"][0]
+    assert matched["sender"]["id"] == world["agent"].id
+
+
+def test_conversation_messages_is_independent_of_the_event_message(world) -> None:
+    """``messages`` is ``messages.chat.last``, not the message being reported."""
+    newest = Message(
+        id=777,
+        conversation_id=world["conversation"].id,
+        inbox_id=world["inbox"].id,
+        content="newest",
+        message_type=MessageType.INCOMING.value,
+        sender_type=SenderType.CONTACT.value,
+        sender_id=world["contact"].id,
+        created_at=T1,
+        updated_at=T1,
+    )
+    body = chatwoot.serialize_message(
+        world["message"],
+        conversation=world["conversation"],
+        inbox=world["inbox"],
+        last_message=newest,
+    )
+    assert body["id"] == world["message"].id
+    assert [m["id"] for m in body["conversation"]["messages"]] == [777]
+
+    # A private note is not a chat message, but the conversation still reports
+    # the newest one that is.
+    note = Message(
+        id=778,
+        conversation_id=world["conversation"].id,
+        inbox_id=world["inbox"].id,
+        content="internal",
+        message_type=MessageType.OUTGOING.value,
+        private=True,
+        sender_type=SenderType.USER.value,
+        created_at=T1,
+        updated_at=T1,
+    )
+    body = chatwoot.serialize_message(
+        note, conversation=world["conversation"], last_message=newest
+    )
+    assert [m["id"] for m in body["conversation"]["messages"]] == [777]
+
+
+def test_contact_inbox_reports_real_hmac_and_pubsub_values(world) -> None:
+    link = world["link"]
+    data = chatwoot.serialize_conversation(world["conversation"], contact_inbox=link)
+    assert data["contact_inbox"]["hmac_verified"] is False
+    assert data["meta"]["hmac_verified"] is False
+
+    link.meta = {"hmac_verified": True, "pubsub_token": "tok-123"}
+    data = chatwoot.serialize_conversation(world["conversation"], contact_inbox=link)
+    assert data["contact_inbox"]["hmac_verified"] is True
+    assert data["contact_inbox"]["pubsub_token"] == "tok-123"
+    assert data["meta"]["hmac_verified"] is True
+
+
 def test_message_deleted_surfaces_as_content_attributes_deleted(world) -> None:
     world["message"].deleted_at = T1
     data = chatwoot.serialize_message(world["message"])
@@ -527,10 +666,24 @@ def test_contact_and_inbox_events(world) -> None:
         {"name": {"previous_value": "Bob", "current_value": "Bobby"}}
     ]
 
-    body = chatwoot.build_event("inbox_updated", inbox=world["inbox"])
+    body = chatwoot.build_event(
+        "inbox_updated", inbox=world["inbox"], changes={"name": ("Support", "Help")}
+    )
     assert body["event"] == "inbox_updated"
     assert body["account"] == chatwoot.serialize_account()
     assert "id" not in body and "name" not in body
+
+
+def test_contact_and_inbox_updates_without_a_diff_do_not_exist(world) -> None:
+    """``return if changed_attributes.blank?`` — the event is never emitted."""
+    assert chatwoot.build_event("contact_updated", contact=world["contact"]) is None
+    assert (
+        chatwoot.build_event("contact_updated", contact=world["contact"], changes={})
+        is None
+    )
+    assert chatwoot.build_event("inbox_updated", inbox=world["inbox"]) is None
+    # Their *created* siblings are not gated on a diff.
+    assert chatwoot.build_event("contact_created", contact=world["contact"]) is not None
 
 
 def test_webwidget_triggered(world) -> None:
@@ -792,6 +945,199 @@ async def test_message_deleted_becomes_message_updated(db_session, world) -> Non
     assert len(POSTS) == 1
     assert _body()["event"] == "message_updated"
     assert _body()["content_attributes"]["deleted"] is True
+
+
+async def test_contact_updated_without_a_diff_is_never_delivered(
+    db_session, world
+) -> None:
+    await _add_hook(
+        db_session,
+        url="https://example.com/cw",
+        subscriptions=["contact_updated"],
+        payload_format="chatwoot",
+    )
+    payload = {
+        "contact": {"id": world["contact"].id, "name": "Bob", "email": "bob@example.com"}
+    }
+    # First sighting: nothing to diff against, so nothing is emitted.
+    await webhook_service._deliver_all("contact.updated", payload)
+    assert POSTS == []
+    # Repeating the identical payload is still not a change.
+    await webhook_service._deliver_all("contact.updated", payload)
+    assert POSTS == []
+
+    await webhook_service._deliver_all(
+        "contact.updated",
+        {"contact": {"id": world["contact"].id, "name": "Bobby", "email": "bob@example.com"}},
+    )
+    assert len(POSTS) == 1
+    assert _body()["changed_attributes"] == [
+        {"name": {"previous_value": "Bob", "current_value": "Bobby"}}
+    ]
+
+
+async def test_inbox_updated_without_a_diff_is_never_delivered(
+    db_session, world
+) -> None:
+    await _add_hook(
+        db_session,
+        url="https://example.com/cw",
+        subscriptions=["inbox_updated"],
+        payload_format="chatwoot",
+    )
+    payload = {"inbox": {"id": world["inbox"].id, "name": "Support"}}
+    await webhook_service._deliver_all("inbox.updated", payload)
+    assert POSTS == []
+    await webhook_service._deliver_all(
+        "inbox.updated", {"inbox": {"id": world["inbox"].id, "name": "Helpdesk"}}
+    )
+    assert len(POSTS) == 1
+    assert _body()["changed_attributes"] == [
+        {"name": {"previous_value": "Support", "current_value": "Helpdesk"}}
+    ]
+
+
+async def test_changed_attributes_covers_more_than_status(db_session, world) -> None:
+    await _add_hook(
+        db_session,
+        url="https://example.com/cw",
+        subscriptions=["conversation_updated", "conversation_status_changed"],
+        payload_format="chatwoot",
+    )
+    conversation_id = world["conversation"].id
+    base = {
+        "id": conversation_id,
+        "status": "open",
+        "priority": "none",
+        "assignee_id": 1,
+        "labels": [],
+        "muted": False,
+    }
+    await webhook_service._deliver_all("conversation.created", {"conversation": base})
+    POSTS.clear()
+
+    await webhook_service._deliver_all(
+        "conversation.updated",
+        {"conversation": {**base, "assignee_id": 2, "priority": "high", "muted": True}},
+    )
+    # Not a status change, so no second event…
+    assert [_body(i)["event"] for i in range(len(POSTS))] == ["conversation_updated"]
+    changed = _body()["changed_attributes"]
+    assert {next(iter(entry)) for entry in changed} == {
+        "assignee_id",
+        "priority",
+        "muted",
+    }
+    assert {"assignee_id": {"previous_value": 1, "current_value": 2}} in changed
+
+
+async def test_message_event_reports_the_conversations_newest_chat_message(
+    db_session, world
+) -> None:
+    """A ``message_updated`` on an older message still reports the newest one."""
+    async with TestSession() as session:
+        newest = Message(
+            conversation_id=world["conversation"].id,
+            inbox_id=world["inbox"].id,
+            content="newer",
+            message_type=MessageType.INCOMING.value,
+            sender_type=SenderType.CONTACT.value,
+            sender_id=world["contact"].id,
+            created_at=T1,
+            updated_at=T1,
+        )
+        session.add(newest)
+        await session.commit()
+        newest_id = newest.id
+
+    await _add_hook(
+        db_session,
+        url="https://example.com/cw",
+        subscriptions=["message_updated"],
+        payload_format="chatwoot",
+    )
+    await webhook_service._deliver_all(
+        "message.updated", {"message": {"id": world["message"].id}}
+    )
+    assert len(POSTS) == 1
+    body = _body()
+    assert body["id"] == world["message"].id
+    assert [m["id"] for m in body["conversation"]["messages"]] == [newest_id]
+
+
+async def test_private_note_event_still_reports_the_last_chat_message(
+    db_session, world
+) -> None:
+    async with TestSession() as session:
+        note = Message(
+            conversation_id=world["conversation"].id,
+            inbox_id=world["inbox"].id,
+            content="internal",
+            message_type=MessageType.OUTGOING.value,
+            private=True,
+            sender_type=SenderType.USER.value,
+            sender_id=world["agent"].id,
+            created_at=T1,
+            updated_at=T1,
+        )
+        session.add(note)
+        await session.commit()
+        note_id = note.id
+
+    await _add_hook(
+        db_session,
+        url="https://example.com/cw",
+        subscriptions=["message_created"],
+        payload_format="chatwoot",
+    )
+    await webhook_service._deliver_all("message.created", {"message": {"id": note_id}})
+    assert len(POSTS) == 1
+    body = _body()
+    assert body["private"] is True  # private notes ARE delivered
+    assert [m["id"] for m in body["conversation"]["messages"]] == [world["message"].id]
+
+
+async def test_nested_sender_is_not_the_assignee_over_the_wire(
+    db_session, world
+) -> None:
+    async with TestSession() as session:
+        other = User(
+            email="sam@example.com",
+            name="Other Agent",
+            role="agent",
+            created_at=T0,
+            updated_at=T0,
+        )
+        session.add(other)
+        await session.flush()
+        reply = Message(
+            conversation_id=world["conversation"].id,
+            inbox_id=world["inbox"].id,
+            content="on it",
+            message_type=MessageType.OUTGOING.value,
+            sender_type=SenderType.USER.value,
+            sender_id=other.id,
+            created_at=T1,
+            updated_at=T1,
+        )
+        session.add(reply)
+        await session.commit()
+        other_id, reply_id = other.id, reply.id
+
+    assert other_id != world["agent"].id  # the conversation's assignee
+
+    await _add_hook(
+        db_session,
+        url="https://example.com/cw",
+        subscriptions=["message_created"],
+        payload_format="chatwoot",
+    )
+    await webhook_service._deliver_all("message.created", {"message": {"id": reply_id}})
+    nested = _body()["conversation"]["messages"][0]
+    assert nested["id"] == reply_id
+    assert nested["sender_id"] == other_id
+    assert nested["sender"]["id"] == other_id
+    assert nested["sender"]["name"] == "Other Agent"
 
 
 async def test_both_formats_delivered_side_by_side(db_session, world) -> None:

@@ -151,6 +151,10 @@ class BaseChannel(abc.ABC):
     supports_polling: ClassVar[bool] = False
     supports_webhook: ClassVar[bool] = False
     supports_proxy: ClassVar[bool] = False
+    #: ``True`` when ``Inbox.webhook_token`` is a permanent public identifier
+    #: rather than a per-mode delivery secret. Such a token must survive a mode
+    #: change: clients have it baked into their URLs and rotating it 404s them.
+    webhook_token_is_identity: ClassVar[bool] = False
     #: Optional feature flags: ``reactions``, ``typing``, ``edit``, ``delete``,
     #: ``voice``, ``stickers``, ``read_receipts``.
     capabilities: ClassVar[set[str]] = set()

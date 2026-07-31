@@ -149,14 +149,25 @@ SENDER_CLASS: dict[str, str | None] = {
 # ---------------------------------------------------------------------------
 # Timestamp helpers — the three formats Chatwoot mixes
 # ---------------------------------------------------------------------------
+def _as_utc(value: datetime) -> datetime:
+    """Naive datetimes coming back from the ORM are UTC, never host-local.
+
+    ``datetime.timestamp()`` on a naive value interprets it in the host time
+    zone, which silently shifts every epoch field in a payload by the server's
+    UTC offset. Everything we store is UTC, so the missing ``tzinfo`` is
+    attached rather than guessed.
+    """
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
 def epoch(value: datetime | None) -> int:
     """Epoch seconds. ``nil.to_i == 0`` in Ruby, so ``None`` becomes ``0``."""
-    return int(value.timestamp()) if value else 0
+    return int(_as_utc(value).timestamp()) if value else 0
 
 
 def epoch_float(value: datetime | None) -> float:
     """Epoch seconds as a float (``updated_at`` on conversations only)."""
-    return float(value.timestamp()) if value else 0.0
+    return float(_as_utc(value).timestamp()) if value else 0.0
 
 
 def iso8601(value: datetime | None) -> str | None:
@@ -168,9 +179,7 @@ def iso8601(value: datetime | None) -> str | None:
     """
     if value is None:
         return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    value = value.astimezone(timezone.utc)
+    value = _as_utc(value).astimezone(timezone.utc)
     return f"{value.strftime('%Y-%m-%dT%H:%M:%S')}.{value.microsecond // 1000:03d}Z"
 
 
@@ -313,9 +322,9 @@ def serialize_contact_inbox(
     """The raw ``ContactInbox`` record Chatwoot embeds in ``conversation``.
 
     Chatwoot serialises the ActiveRecord object, so the payload carries every DB
-    column including ``pubsub_token`` and ``hmac_verified``. We have no such
-    columns; both are emitted with static values (unverified against a live
-    instance, but the key set is what consumers destructure).
+    column including ``pubsub_token`` and ``hmac_verified``. We keep both on the
+    link row's ``meta`` bag — the Client API writes them there — so they are
+    reported truthfully rather than as constants.
     """
     if contact_inbox is None:
         if source_id is None:
@@ -336,11 +345,18 @@ def serialize_contact_inbox(
         "contact_id": contact_inbox.contact_id,
         "inbox_id": contact_inbox.inbox_id,
         "source_id": contact_inbox.source_id,
-        "hmac_verified": False,
-        "pubsub_token": None,
+        "hmac_verified": hmac_verified(contact_inbox),
+        "pubsub_token": (contact_inbox.meta or {}).get("pubsub_token"),
         "created_at": iso8601(contact_inbox.created_at),
         "updated_at": iso8601(contact_inbox.updated_at),
     }
+
+
+def hmac_verified(contact_inbox: ContactInbox | None) -> bool:
+    """Whether this link passed ``identifier_hash`` validation at least once."""
+    if contact_inbox is None:
+        return False
+    return bool((contact_inbox.meta or {}).get("hmac_verified", False))
 
 
 # ---------------------------------------------------------------------------
@@ -458,10 +474,42 @@ def conversation_display_id(conversation: Conversation) -> int:
     return conversation.id
 
 
+def resolve_message_sender(
+    message: Message | None,
+    *,
+    contact: Contact | None = None,
+    assignee: User | None = None,
+) -> Contact | User | None:
+    """Best-effort sender for a message we were not handed one for.
+
+    Only an object whose **id actually matches** ``sender_id`` is used: the
+    conversation's assignee is not necessarily the agent who wrote the message,
+    and attributing it to them would contradict ``sender_id`` in the same
+    object. Anything we cannot match resolves to ``None`` so the caller can
+    supply the real row instead.
+    """
+    if message is None or message.sender_id is None:
+        return None
+    if (
+        message.sender_type == SenderType.CONTACT.value
+        and contact is not None
+        and contact.id == message.sender_id
+    ):
+        return contact
+    if (
+        message.sender_type == SenderType.USER.value
+        and assignee is not None
+        and assignee.id == message.sender_id
+    ):
+        return assignee
+    return None
+
+
 def serialize_conversation(
     conversation: Conversation,
     *,
     last_message: Message | None = None,
+    last_message_sender: Contact | User | None = None,
     contact: Contact | None = None,
     inbox: Inbox | None = None,
     assignee: User | None = None,
@@ -489,13 +537,18 @@ def serialize_conversation(
 
     messages: list[dict[str, Any]] = []
     if last_message is not None and _is_chat_message(last_message):
+        sender = last_message_sender
+        if sender is None:
+            sender = resolve_message_sender(
+                last_message, contact=contact, assignee=assignee
+            )
         messages.append(
             serialize_message(
                 last_message,
                 push=True,
                 conversation=conversation,
                 inbox=inbox,
-                sender=contact if last_message.sender_type == SenderType.CONTACT.value else assignee,
+                sender=sender,
                 contact_inbox=contact_inbox,
             )
         )
@@ -523,7 +576,7 @@ def serialize_conversation(
             "assignee": serialize_agent(assignee, push=True),
             "assignee_type": "User" if assignee is not None else None,
             "team": serialize_team(team),
-            "hmac_verified": False,
+            "hmac_verified": hmac_verified(contact_inbox),
         },
         "status": conversation.status,
         "custom_attributes": conversation.custom_attributes or {},
@@ -577,6 +630,8 @@ def serialize_message(
     team: Team | None = None,
     contact_inbox: ContactInbox | None = None,
     labels: list[str] | None = None,
+    last_message: Message | None = None,
+    last_message_sender: Contact | User | None = None,
     push: bool = False,
 ) -> dict[str, Any]:
     """``Message#webhook_data`` (``push=False``) or ``#webhook_push_event_data``.
@@ -654,7 +709,12 @@ def serialize_message(
         "conversation": (
             serialize_conversation(
                 conversation,
-                last_message=message if _is_chat_message(message) else None,
+                # ``messages`` is the conversation's own newest chat message
+                # (``messages.chat.last``), *not* the message this event is
+                # about: a message_updated on an older message still reports the
+                # newest one, and a private note reports the one before it.
+                last_message=last_message,
+                last_message_sender=last_message_sender,
                 contact=contact,
                 inbox=inbox,
                 assignee=assignee,
@@ -703,8 +763,20 @@ def build_changed_attributes(
 # ---------------------------------------------------------------------------
 # Event envelopes
 # ---------------------------------------------------------------------------
-def build_event(event_name: str, **objects: Any) -> dict[str, Any]:
+#: ``contact_updated`` / ``inbox_updated`` early-return on a blank diff in
+#: Chatwoot's listener (``return if changed_attributes.blank?``), so those two
+#: events simply do not exist without changes to report.
+SUPPRESSED_WITHOUT_CHANGES: frozenset[str] = frozenset(
+    {"contact_updated", "inbox_updated"}
+)
+
+
+def build_event(event_name: str, **objects: Any) -> dict[str, Any] | None:
     """Build the complete HTTP body for one Chatwoot webhook event.
+
+    Returns ``None`` when Chatwoot would not have emitted the event at all —
+    today that is ``contact_updated`` / ``inbox_updated`` with an empty
+    ``changes`` mapping.
 
     Chatwoot has **no envelope**: for ten of the twelve events the body is the
     resource's ``webhook_data`` hash with ``event`` merged in as one more
@@ -721,6 +793,8 @@ def build_event(event_name: str, **objects: Any) -> dict[str, Any]:
         raise ValueError(f"Unknown Chatwoot webhook event: {event_name}")
 
     changed = build_changed_attributes(objects.get("changes"))
+    if event_name in SUPPRESSED_WITHOUT_CHANGES and changed is None:
+        return None
 
     if event_name in ("conversation_typing_on", "conversation_typing_off"):
         conversation = objects["conversation"]
@@ -761,6 +835,8 @@ def build_event(event_name: str, **objects: Any) -> dict[str, Any]:
             team=objects.get("team"),
             contact_inbox=objects.get("contact_inbox"),
             labels=objects.get("labels"),
+            last_message=objects.get("last_message"),
+            last_message_sender=objects.get("last_message_sender"),
         )
         body["event"] = event_name
         return body
@@ -809,6 +885,7 @@ def _conversation_body(
     return serialize_conversation(
         conversation,
         last_message=objects.get("last_message"),
+        last_message_sender=objects.get("last_message_sender"),
         contact=objects.get("contact"),
         inbox=objects.get("inbox"),
         assignee=objects.get("assignee"),

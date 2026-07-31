@@ -79,24 +79,31 @@ def generate_token(length: int = TOKEN_LENGTH) -> str:
 # ---------------------------------------------------------------------------
 #: The outgoing payload needs the *whole* conversation graph, but
 #: :meth:`BaseChannel.send_message` only receives the upstream chat id. The
-#: caller that owns the transaction publishes its session here so the channel
-#: can read rows that are flushed but not yet committed — a second connection
-#: would not see them. When it is unset (a caller that predates this channel)
-#: we degrade gracefully: the conversation is read through a fresh session and
-#: the message is rendered from the outbound payload alone.
+#: caller that owns the transaction publishes its session — and the row being
+#: delivered — here, so the channel can read data that is flushed but not yet
+#: committed: a second connection would not see it, and the payload would
+#: collapse to a message with no id, no timestamp and no sender.
+#:
+#: :func:`app.services.conversations.deliver_message` sets both around every
+#: delivery, so *every* producer (agent UI, automations, campaigns, the
+#: Application API) gets the real row. The degraded path below only survives for
+#: a caller that reaches ``send_message`` without going through delivery.
 _ambient_session: ContextVar[AsyncSession | None] = ContextVar(
     "api_channel_session", default=None
 )
+_ambient_message: ContextVar[Any] = ContextVar("api_channel_message", default=None)
 
 
 @asynccontextmanager
-async def use_session(session: AsyncSession):
-    """Lend ``session`` to any API channel delivery made inside the block."""
-    token = _ambient_session.set(session)
+async def use_session(session: AsyncSession, message: Message | None = None):
+    """Lend ``session`` (and the row being delivered) to an API channel send."""
+    session_token = _ambient_session.set(session)
+    message_token = _ambient_message.set(message)
     try:
         yield session
     finally:
-        _ambient_session.reset(token)
+        _ambient_message.reset(message_token)
+        _ambient_session.reset(session_token)
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +125,9 @@ class ApiChannel(BaseChannel):
     supports_polling = False
     supports_webhook = True
     supports_proxy = False
+    #: ``webhook_token`` holds ``inbox_identifier``, a permanent public URL
+    #: segment — it must never be cleared, whatever mode the inbox is in.
+    webhook_token_is_identity = True
     #: Honest capability set: the channel relays JSON, nothing more. Media
     #: travels as URLs inside the payload and replies carry ``in_reply_to``;
     #: there is no upstream to react to, edit, delete or type into.
@@ -215,9 +225,25 @@ class ApiChannel(BaseChannel):
         return data
 
     async def setup(self) -> dict[str, Any]:
+        """Pin the public identifier to the inbox row, not just to the config.
+
+        Updating an inbox replaces its config wholesale (only fields flagged
+        ``secret`` are carried over), and the identifier must *never* rotate —
+        it is a public URL segment every configured client has baked in. So the
+        canonical copy lives in ``Inbox.webhook_token``, a real column no config
+        edit can drop, and the config mirrors it back for display.
+        """
+        identifier = (
+            self.inbox.webhook_token
+            or self.config.get("inbox_identifier")
+            or generate_token()
+        )
+        self.inbox.webhook_token = identifier
+        self.config["inbox_identifier"] = identifier
         return {
-            "inbox_identifier": self.config.get("inbox_identifier"),
+            "inbox_identifier": identifier,
             "webhook_url": self.config.get("webhook_url"),
+            "config": {"inbox_identifier": identifier},
         }
 
     async def health_check(self) -> dict[str, Any]:
@@ -290,16 +316,20 @@ class ApiChannel(BaseChannel):
                 f"Webhook URL returned HTTP {response.status_code}"
             )
 
+        logger.debug(
+            "delivered message %s to %s (HTTP %s, delivery %s)",
+            message_id,
+            url,
+            response.status_code,
+            delivery_id,
+        )
         remote_id = _remote_message_id(response)
+        # No delivery metadata is returned: ``SendResult.attributes`` is merged
+        # into ``content_attributes``, which is republished verbatim to
+        # third-party Chatwoot consumers. The operator's webhook URL and our
+        # internal delivery id have no business in a message body.
         return SendResult(
-            source_id=remote_id or (str(message_id) if message_id else delivery_id),
-            attributes={
-                "api": {
-                    "delivery_id": delivery_id,
-                    "status_code": response.status_code,
-                    "webhook_url": url,
-                }
-            },
+            source_id=remote_id or (str(message_id) if message_id else delivery_id)
         )
 
     # -- payload ---------------------------------------------------------
@@ -307,16 +337,21 @@ class ApiChannel(BaseChannel):
         self, chat_source_id: str, message: OutboundMessage
     ) -> tuple[dict[str, Any], int | None]:
         session = _ambient_session.get()
+        row = _ambient_message.get()
         if session is not None:
-            return await self._payload_from(session, chat_source_id, message)
+            return await self._payload_from(session, chat_source_id, message, row)
 
         from ...db import SessionLocal
 
         async with SessionLocal() as fresh:
-            return await self._payload_from(fresh, chat_source_id, message)
+            return await self._payload_from(fresh, chat_source_id, message, row)
 
     async def _payload_from(
-        self, db: AsyncSession, chat_source_id: str, message: OutboundMessage
+        self,
+        db: AsyncSession,
+        chat_source_id: str,
+        message: OutboundMessage,
+        row: Message | None = None,
     ) -> tuple[dict[str, Any], int | None]:
         from ...compat import chatwoot
 
@@ -330,26 +365,30 @@ class ApiChannel(BaseChannel):
             .limit(1)
         )
 
-        row: Message | None = None
         sender: User | None = None
         contact_inbox: ContactInbox | None = None
         team: Team | None = None
+        last_message: Message | None = None
 
         if conversation is not None:
-            # The message being delivered is the newest outgoing, non-private
-            # one that has not been given an upstream id yet — delivery is what
-            # assigns that id.
-            row = await db.scalar(
-                select(Message)
-                .where(
-                    Message.conversation_id == conversation.id,
-                    Message.message_type == MessageType.OUTGOING.value,
-                    Message.private.is_(False),
-                    Message.source_id.is_(None),
+            if row is None:
+                # No row was lent to us. Fall back to the newest outgoing,
+                # non-private message still without an upstream id — delivery is
+                # what assigns that id. This is a guess (a retry of an older
+                # message would pick the wrong row), which is why every real
+                # delivery path lends the row instead.
+                row = await db.scalar(
+                    select(Message)
+                    .where(
+                        Message.conversation_id == conversation.id,
+                        Message.message_type == MessageType.OUTGOING.value,
+                        Message.private.is_(False),
+                        Message.source_id.is_(None),
+                    )
+                    .order_by(desc(Message.id))
+                    .limit(1)
                 )
-                .order_by(desc(Message.id))
-                .limit(1)
-            )
+            last_message = await self._last_chat_message(db, conversation.id)
             if conversation.contact_inbox_id:
                 contact_inbox = await db.get(
                     ContactInbox, conversation.contact_inbox_id
@@ -362,6 +401,25 @@ class ApiChannel(BaseChannel):
         if row.sender_type == SenderType.USER.value and row.sender_id:
             sender = await db.get(User, row.sender_id)
 
+        contact = conversation.contact if conversation is not None else None
+        assignee = conversation.assignee if conversation is not None else None
+        last_sender: Any = None
+        if last_message is not None:
+            same_row = (
+                row is not None
+                and last_message.id is not None
+                and last_message.id == row.id
+            )
+            if same_row:
+                last_sender = sender
+            elif (
+                last_message.sender_type == SenderType.USER.value
+                and last_message.sender_id
+            ):
+                last_sender = await db.get(User, last_message.sender_id)
+            elif last_message.sender_type == SenderType.CONTACT.value:
+                last_sender = contact
+
         inbox = conversation.inbox if conversation is not None else self.inbox
         body = chatwoot.build_event(
             "message_created",
@@ -369,12 +427,31 @@ class ApiChannel(BaseChannel):
             conversation=conversation,
             inbox=inbox,
             sender=sender,
-            contact=conversation.contact if conversation is not None else None,
-            assignee=conversation.assignee if conversation is not None else None,
+            contact=contact,
+            assignee=assignee,
             team=team,
             contact_inbox=contact_inbox,
+            last_message=last_message,
+            last_message_sender=last_sender,
         )
+        assert body is not None  # message_created is never suppressed
         return body, row.id
+
+    @staticmethod
+    async def _last_chat_message(
+        db: AsyncSession, conversation_id: int
+    ) -> Message | None:
+        """Chatwoot's ``chat`` scope: not an activity message, not private."""
+        return await db.scalar(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.message_type != MessageType.ACTIVITY.value,
+                Message.private.is_(False),
+            )
+            .order_by(desc(Message.id))
+            .limit(1)
+        )
 
     def _transient_message(
         self, conversation: Conversation | None, message: OutboundMessage

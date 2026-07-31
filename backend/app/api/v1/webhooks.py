@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 
 from ...channels.base import ChannelError, build_channel
+from ...compat import chatwoot
 from ...core import events as bus
 from ...core.deps import DbSession, get_current_admin
 from ...models import Inbox, Webhook
@@ -29,6 +30,7 @@ def _serialize(hook: Webhook) -> dict:
         "url": hook.url,
         "name": hook.name,
         "subscriptions": hook.subscriptions or [],
+        "payload_format": hook.payload_format,
         "has_secret": bool(hook.secret),
         "active": hook.active,
         "inbox_id": hook.inbox_id,
@@ -46,10 +48,29 @@ async def _get(db: DbSession, webhook_id: int) -> Webhook:
     return hook
 
 
-@router.get("/events")
-async def list_events() -> list[str]:
-    """Event names a webhook can subscribe to."""
+def _vocabulary(payload_format: str) -> list[str]:
+    """Event names valid for a given wire format."""
+    if payload_format == "chatwoot":
+        return list(chatwoot.CHATWOOT_EVENTS)
     return list(bus.ALL_EVENTS)
+
+
+def _reject_unknown(subscriptions: list[str] | None, payload_format: str) -> None:
+    unknown = set(subscriptions or []) - set(_vocabulary(payload_format))
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown {payload_format} events: {', '.join(sorted(unknown))}. "
+                f"Valid: {', '.join(_vocabulary(payload_format))}"
+            ),
+        )
+
+
+@router.get("/events")
+async def list_events(payload_format: str = "native") -> list[str]:
+    """Event names a webhook of this format can subscribe to."""
+    return _vocabulary(payload_format)
 
 
 @router.get("")
@@ -60,11 +81,7 @@ async def list_webhooks(db: DbSession) -> list[dict]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_webhook(payload: WebhookCreate, db: DbSession) -> dict:
-    unknown = set(payload.subscriptions) - set(bus.ALL_EVENTS)
-    if unknown:
-        raise HTTPException(
-            status_code=422, detail=f"Unknown events: {', '.join(sorted(unknown))}"
-        )
+    _reject_unknown(payload.subscriptions, payload.payload_format)
     hook = Webhook(**payload.model_dump())
     db.add(hook)
     await db.flush()
@@ -78,11 +95,10 @@ async def update_webhook(
     hook = await _get(db, webhook_id)
     data = payload.model_dump(exclude_unset=True)
     if data.get("subscriptions"):
-        unknown = set(data["subscriptions"]) - set(bus.ALL_EVENTS)
-        if unknown:
-            raise HTTPException(
-                status_code=422, detail=f"Unknown events: {', '.join(sorted(unknown))}"
-            )
+        # Validate against the format the hook will have after this update.
+        _reject_unknown(
+            data["subscriptions"], data.get("payload_format", hook.payload_format)
+        )
     for field, value in data.items():
         setattr(hook, field, value)
     await db.flush()

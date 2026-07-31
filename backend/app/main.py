@@ -16,6 +16,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from .api.chatwoot import application_router as chatwoot_application_router
+from .api.chatwoot import client_router as chatwoot_client_router
 from .api.v1 import api_router
 from .channels.base import ChannelError
 from .config import settings
@@ -92,6 +94,13 @@ async def channel_error_handler(request: Request, exc: ChannelError) -> JSONResp
 
 app.include_router(api_router, prefix=API_PREFIX)
 
+# Chatwoot compatibility surface — additive, and mounted *after* the native
+# routers so it can never shadow them. The Application API only claims
+# ``/api/v1/accounts/…``, which is not a native resource; the Client API lives
+# under its own ``/public/api/v1`` root. Both carry their own prefix.
+app.include_router(chatwoot_client_router)
+app.include_router(chatwoot_application_router)
+
 
 # ---------------------------------------------------------------------------
 # Single page application
@@ -102,10 +111,16 @@ if INDEX_FILE.exists():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa(full_path: str) -> FileResponse:
+    async def spa(full_path: str):
         """Serve static files and hand every other path to the client router."""
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
+        # The Chatwoot Client API is a JSON-only surface: an unknown or
+        # mistyped path there must answer Chatwoot's 404 body, not index.html.
+        if full_path == "public" or full_path.startswith("public/"):
+            return JSONResponse(
+                status_code=404, content={"error": "Resource could not be found"}
+            )
         candidate = (STATIC_DIR / full_path).resolve()
         if (
             full_path

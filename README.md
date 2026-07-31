@@ -33,8 +33,15 @@ pluggable source architecture for everything that comes next.
 - Agents, teams, labels, canned responses
 - Automations: condition/action rules plus per-inbox auto-greeting and
   out-of-office replies with working hours
-- Outgoing webhooks (HMAC-signed), API tokens, SSO (OIDC) providers
+- Outgoing webhooks (HMAC-signed, native or Chatwoot format), API tokens,
+  SSO (OIDC) providers
 - Installation settings, registration flag, dashboard with live stats
+
+**Chatwoot compatibility**
+- Outgoing webhooks in Chatwoot's exact payload format and event vocabulary
+- An `api` channel: an inbox fed over HTTP, replies posted to your webhook_url
+- Chatwoot's Client API (`/public/api/v1/…`) and a subset of the Application
+  API (`/api/v1/accounts/…`) — see [docs/CHATWOOT-COMPAT.md](docs/CHATWOOT-COMPAT.md)
 
 **Telegram**
 - Latest Bot API, long polling or webhook mode, optional HTTP/SOCKS proxy
@@ -137,7 +144,8 @@ frontend/src
 
 Adding a new source is a single class — see
 [docs/CHANNELS.md](docs/CHANNELS.md). Automations, greetings and webhooks are
-documented in [docs/AUTOMATIONS.md](docs/AUTOMATIONS.md). The REST API is
+documented in [docs/AUTOMATIONS.md](docs/AUTOMATIONS.md), and the Chatwoot
+compatibility layer in [docs/CHATWOOT-COMPAT.md](docs/CHATWOOT-COMPAT.md). The REST API is
 self-documenting at `/api/docs`.
 
 ## Tests

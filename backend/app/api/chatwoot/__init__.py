@@ -54,6 +54,11 @@ def unauthorized(message: str = "Invalid Access Token") -> ChatwootError:
     return ChatwootError(401, {"error": message})
 
 
+def forbidden(message: str) -> ChatwootError:
+    """``render json: {error: …}, status: :forbidden``."""
+    return ChatwootError(403, {"error": message})
+
+
 def invalid(message: str, attributes: list[str] | None = None) -> ChatwootError:
     """``render_record_invalid`` — note the key is ``message``, not ``error``."""
     body: dict[str, Any] = {"message": message}
@@ -115,6 +120,7 @@ __all__ = [
     "application_router",
     "client_router",
     "conversation_uuid",
+    "forbidden",
     "invalid",
     "not_found",
     "parameter_missing",

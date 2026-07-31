@@ -27,6 +27,7 @@ import hmac
 import logging
 import secrets
 import uuid
+from datetime import timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
@@ -44,6 +45,7 @@ from ...channels.base import (
 from ...compat import chatwoot
 from ...core import events as bus
 from ...core.deps import DbSession
+from ...db import utcnow
 from ...models import (
     AttachmentType,
     Contact,
@@ -53,6 +55,8 @@ from ...models import (
     Inbox,
     Message,
     MessageType,
+    SenderType,
+    User,
 )
 from ...services import conversations as conv_service
 from . import (
@@ -171,14 +175,39 @@ def _contact_body(contact: Contact) -> dict[str, Any]:
     }
 
 
-def _message_body(message: Message, conversation: Conversation) -> dict[str, Any]:
+async def _sender_of(
+    db: DbSession, message: Message, contact: Contact | None
+) -> Contact | User | None:
+    """Resolve the polymorphic sender so the payload keeps its ``sender`` key."""
+    if message.sender_id is None:
+        return None
+    if message.sender_type == SenderType.CONTACT.value:
+        if contact is not None and contact.id == message.sender_id:
+            return contact
+        return await db.get(Contact, message.sender_id)
+    if message.sender_type == SenderType.USER.value:
+        return await db.get(User, message.sender_id)
+    return None
+
+
+async def _message_body(
+    db: DbSession,
+    message: Message,
+    conversation: Conversation,
+    contact: Contact | None = None,
+) -> dict[str, Any]:
     """``public/api/v1/models/_message``.
 
     Built from the compat layer's push representation, so ``message_type`` is
     the **integer** and ``created_at`` epoch seconds — the two places where the
     REST shape differs from the webhook shape.
     """
-    push = chatwoot.serialize_message(message, push=True, conversation=conversation)
+    push = chatwoot.serialize_message(
+        message,
+        push=True,
+        conversation=conversation,
+        sender=await _sender_of(db, message, contact),
+    )
     body = {
         "id": push["id"],
         "content": push["content"],
@@ -196,8 +225,8 @@ def _message_body(message: Message, conversation: Conversation) -> dict[str, Any
     return body
 
 
-def _conversation_body(
-    conversation: Conversation, messages: list[Message], contact: Contact
+async def _conversation_body(
+    db: DbSession, conversation: Conversation, messages: list[Message], contact: Contact
 ) -> dict[str, Any]:
     """``public/api/v1/models/_conversation``.
 
@@ -212,7 +241,9 @@ def _conversation_body(
         "contact_last_seen_at": chatwoot.epoch(conversation.contact_last_seen_at),
         "status": conversation.status,
         "agent_last_seen_at": chatwoot.epoch(conversation.agent_last_seen_at),
-        "messages": [_message_body(m, conversation) for m in messages],
+        "messages": [
+            await _message_body(db, m, conversation, contact) for m in messages
+        ],
         "contact": chatwoot.serialize_contact(contact, push=True),
     }
 
@@ -408,7 +439,8 @@ async def list_conversations(
         .order_by(Conversation.id)
     )
     return [
-        _conversation_body(c, await _chat_messages(db, c), contact) for c in rows
+        await _conversation_body(db, c, await _chat_messages(db, c), contact)
+        for c in rows
     ]
 
 
@@ -437,7 +469,9 @@ async def create_conversation(
         conversation,
         bus.EVENT_CONVERSATION_CREATED if created else bus.EVENT_CONVERSATION_UPDATED,
     )
-    return _conversation_body(conversation, await _chat_messages(db, conversation), contact)
+    return await _conversation_body(
+        db, conversation, await _chat_messages(db, conversation), contact
+    )
 
 
 @router.get(
@@ -451,7 +485,9 @@ async def show_conversation(
     conversation = await _find_conversation(db, inbox, link, conversation_id)
     contact = await db.get(Contact, link.contact_id)
     assert contact is not None
-    return _conversation_body(conversation, await _chat_messages(db, conversation), contact)
+    return await _conversation_body(
+        db, conversation, await _chat_messages(db, conversation), contact
+    )
 
 
 @router.post(
@@ -472,7 +508,9 @@ async def toggle_status(
     await conv_service.set_status(db, conversation, target)
     contact = await db.get(Contact, link.contact_id)
     assert contact is not None
-    return _conversation_body(conversation, await _chat_messages(db, conversation), contact)
+    return await _conversation_body(
+        db, conversation, await _chat_messages(db, conversation), contact
+    )
 
 
 @router.post(
@@ -512,8 +550,6 @@ async def update_last_seen(
     inbox = await _find_inbox(db, inbox_identifier)
     link = await _find_link(db, inbox, contact_identifier)
     conversation = await _find_conversation(db, inbox, link, conversation_id)
-    from ...db import utcnow
-
     conversation.contact_last_seen_at = utcnow()
     await db.flush()
     return Response(status_code=200)
@@ -546,7 +582,62 @@ async def list_messages(
     if before is not None:
         query = query.where(Message.id < before)
     rows = list(await db.scalars(query.order_by(desc(Message.id)).limit(20)))
-    return [_message_body(m, conversation) for m in reversed(rows)]
+    contact = await db.get(Contact, link.contact_id)
+    return [
+        await _message_body(db, m, conversation, contact) for m in reversed(rows)
+    ]
+
+
+#: ``You cannot update the CSAT survey after 14 days``.
+CSAT_WINDOW_DAYS = 14
+
+
+@router.patch(
+    "/inboxes/{inbox_identifier}/contacts/{contact_identifier}"
+    "/conversations/{conversation_id}/messages/{message_id}"
+)
+async def update_message(
+    inbox_identifier: str,
+    contact_identifier: str,
+    conversation_id: int,
+    message_id: int,
+    request: Request,
+    db: DbSession,
+) -> dict[str, Any]:
+    """CSAT only — the sole field Chatwoot permits here is ``submitted_values``."""
+    inbox = await _find_inbox(db, inbox_identifier)
+    link = await _find_link(db, inbox, contact_identifier)
+    conversation = await _find_conversation(db, inbox, link, conversation_id)
+
+    message = await db.get(Message, message_id)
+    if message is None or message.conversation_id != conversation.id:
+        raise not_found()
+
+    created = message.created_at
+    if created is not None:
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if utcnow() - created > timedelta(days=CSAT_WINDOW_DAYS):
+            raise ChatwootError(
+                422, {"error": "You cannot update the CSAT survey after 14 days"}
+            )
+
+    params = await read_params(request)
+    submitted = params.get("submitted_values")
+    if submitted is not None:
+        message.content_attributes = {
+            **(message.content_attributes or {}),
+            "submitted_values": submitted,
+        }
+        await db.flush()
+        await db.refresh(message)
+        await bus.publish(
+            bus.EVENT_MESSAGE_UPDATED,
+            {"message": {"id": message.id}, "conversation_id": conversation.id},
+        )
+    return await _message_body(
+        db, message, conversation, await db.get(Contact, link.contact_id)
+    )
 
 
 def _normalize_attachments(params: dict[str, Any]) -> list[NormalizedAttachment]:
@@ -621,10 +712,15 @@ async def create_message(
                     attributes=attributes,
                 ),
             ),
+            # The URL names the conversation; without this the message would be
+            # filed under the contact's most recently active thread instead.
+            conversation=conversation,
         )
     finally:
         await channel.close()
 
     if message is None:
         raise ChatwootError(422, {"message": "Message could not be created"})
-    return _message_body(message, conversation)
+    return await _message_body(
+        db, message, conversation, await db.get(Contact, link.contact_id)
+    )

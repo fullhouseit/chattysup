@@ -201,9 +201,21 @@ async def create_activity_message(
 # Inbound pipeline
 # ---------------------------------------------------------------------------
 async def process_inbound_event(
-    db: AsyncSession, inbox: Inbox, channel: BaseChannel, event: InboundEvent
+    db: AsyncSession,
+    inbox: Inbox,
+    channel: BaseChannel,
+    event: InboundEvent,
+    *,
+    conversation: Conversation | None = None,
 ) -> Message | None:
-    """Apply one normalised provider event to the database."""
+    """Apply one normalised provider event to the database.
+
+    ``conversation`` pins the thread the event belongs to. Providers do not name
+    a thread — they name a chat — so it is normally resolved from the contact.
+    Callers that *do* know it (the Chatwoot Client API addresses a conversation
+    by id in the URL) must pass it, otherwise the message would silently land in
+    whichever of the contact's conversations was most recently active.
+    """
     handler = {
         "message": _handle_inbound_message,
         "message_edited": _handle_inbound_edit,
@@ -215,22 +227,33 @@ async def process_inbound_event(
     if handler is None:
         logger.debug("ignoring unsupported inbound event kind %s", event.kind)
         return None
-    return await handler(db, inbox, channel, event)
+    return await handler(db, inbox, channel, event, conversation=conversation)
 
 
 async def _resolve_thread(
-    db: AsyncSession, inbox: Inbox, event: InboundEvent, channel: BaseChannel | None = None
+    db: AsyncSession,
+    inbox: Inbox,
+    event: InboundEvent,
+    channel: BaseChannel | None = None,
+    conversation: Conversation | None = None,
 ) -> tuple[Contact, Conversation, bool] | None:
     payload = event.contact or NormalizedContact(source_id=event.chat_source_id)
     contact, link = await find_or_create_contact(db, inbox, payload, channel)
     if contact.blocked:
         return None
+    if conversation is not None:
+        return contact, conversation, False
     conversation, created = await find_or_create_conversation(db, inbox, contact, link)
     return contact, conversation, created
 
 
 async def _handle_inbound_message(
-    db: AsyncSession, inbox: Inbox, channel: BaseChannel, event: InboundEvent
+    db: AsyncSession,
+    inbox: Inbox,
+    channel: BaseChannel,
+    event: InboundEvent,
+    *,
+    conversation: Conversation | None = None,
 ) -> Message | None:
     assert event.message is not None
     source_id = event.message.source_id
@@ -244,7 +267,7 @@ async def _handle_inbound_message(
         if existing:  # provider redelivery — nothing to do
             return existing
 
-    resolved = await _resolve_thread(db, inbox, event, channel)
+    resolved = await _resolve_thread(db, inbox, event, channel, conversation)
     if resolved is None:
         return None
     contact, conversation, created = resolved
@@ -324,7 +347,12 @@ async def _handle_inbound_message(
 
 
 async def _handle_inbound_edit(
-    db: AsyncSession, inbox: Inbox, channel: BaseChannel, event: InboundEvent
+    db: AsyncSession,
+    inbox: Inbox,
+    channel: BaseChannel,
+    event: InboundEvent,
+    *,
+    conversation: Conversation | None = None,
 ) -> Message | None:
     assert event.message is not None
     message = await db.scalar(
@@ -334,7 +362,9 @@ async def _handle_inbound_edit(
         )
     )
     if not message:
-        return await _handle_inbound_message(db, inbox, channel, event)
+        return await _handle_inbound_message(
+            db, inbox, channel, event, conversation=conversation
+        )
     history = list((message.content_attributes or {}).get("edit_history", []))
     history.append({"content": message.content, "at": utcnow().isoformat()})
     message.content = event.message.content
@@ -352,7 +382,12 @@ async def _handle_inbound_edit(
 
 
 async def _handle_inbound_delete(
-    db: AsyncSession, inbox: Inbox, channel: BaseChannel, event: InboundEvent
+    db: AsyncSession,
+    inbox: Inbox,
+    channel: BaseChannel,
+    event: InboundEvent,
+    *,
+    conversation: Conversation | None = None,
 ) -> Message | None:
     message = await db.scalar(
         select(Message).where(
@@ -371,7 +406,12 @@ async def _handle_inbound_delete(
 
 
 async def _handle_inbound_reaction(
-    db: AsyncSession, inbox: Inbox, channel: BaseChannel, event: InboundEvent
+    db: AsyncSession,
+    inbox: Inbox,
+    channel: BaseChannel,
+    event: InboundEvent,
+    *,
+    conversation: Conversation | None = None,
 ) -> Message | None:
     message = await db.scalar(
         select(Message).where(
@@ -403,13 +443,23 @@ async def _handle_inbound_reaction(
 
 
 async def _handle_inbound_read(
-    db: AsyncSession, inbox: Inbox, channel: BaseChannel, event: InboundEvent
+    db: AsyncSession,
+    inbox: Inbox,
+    channel: BaseChannel,
+    event: InboundEvent,
+    *,
+    conversation: Conversation | None = None,
 ) -> None:
     return None
 
 
 async def _handle_inbound_typing(
-    db: AsyncSession, inbox: Inbox, channel: BaseChannel, event: InboundEvent
+    db: AsyncSession,
+    inbox: Inbox,
+    channel: BaseChannel,
+    event: InboundEvent,
+    *,
+    conversation: Conversation | None = None,
 ) -> None:
     link = await db.scalar(
         select(ContactInbox).where(
@@ -529,8 +579,15 @@ async def deliver_message(
         await db.flush()
         return
 
+    # Channels that render a Chatwoot payload out of our own rows need to read
+    # this transaction (the message is flushed, not committed) and need to know
+    # *which* row is being delivered. Lending both here covers every producer —
+    # agent UI, automations, campaigns, the Chatwoot Application API.
+    from ..channels.api_channel.channel import use_session
+
     try:
-        result = await channel.send_message(target, outbound)
+        async with use_session(db, message):
+            result = await channel.send_message(target, outbound)
         message.source_id = result.source_id
         message.status = MessageStatus.SENT.value
         message.external_error = None

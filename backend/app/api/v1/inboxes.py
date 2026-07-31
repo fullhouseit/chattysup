@@ -71,6 +71,14 @@ async def _remove_worker(inbox_id: int) -> None:
         logger.exception("worker removal failed for inbox %s", inbox_id)
 
 
+def _token_is_identity(inbox: Inbox) -> bool:
+    """Does this channel treat ``webhook_token`` as a permanent public id?"""
+    try:
+        return get_channel_class(inbox.channel_type).webhook_token_is_identity
+    except ChannelConfigError:  # pragma: no cover - unknown channel type
+        return False
+
+
 def _merge_secrets(
     channel_type: str, current: dict[str, Any], incoming: dict[str, Any]
 ) -> dict[str, Any]:
@@ -181,7 +189,11 @@ async def update_inbox(inbox_id: int, payload: InboxUpdate, db: DbSession) -> di
 
     for field, value in data.items():
         setattr(inbox, field, value)
-    if inbox.mode != InboxMode.WEBHOOK.value:
+    # A webhook token is a per-mode delivery secret and is dropped when the
+    # inbox stops receiving webhooks — unless the channel uses it as a permanent
+    # public identifier (the API channel's ``inbox_identifier``), in which case
+    # clearing it would silently rotate every configured Client API URL.
+    if inbox.mode != InboxMode.WEBHOOK.value and not _token_is_identity(inbox):
         inbox.webhook_token = None
     await db.flush()
 
