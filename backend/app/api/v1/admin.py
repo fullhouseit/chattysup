@@ -72,6 +72,33 @@ async def stats(db: DbSession) -> dict:
         )
     ).unique().all()
 
+    # Resolve the participants of the recent messages in two lookups rather
+    # than one per row.
+    conversation_ids = {message.conversation_id for message in recent}
+    contact_by_conversation = {
+        row[0]: row[1]
+        for row in (
+            await db.execute(
+                select(Conversation.id, Contact.name)
+                .join(Contact, Contact.id == Conversation.contact_id)
+                .where(Conversation.id.in_(conversation_ids or {0}))
+            )
+        ).all()
+    }
+    agent_ids = {
+        message.sender_id
+        for message in recent
+        if message.sender_id and message.sender_type == "user"
+    }
+    agent_names = {
+        row[0]: row[1]
+        for row in (
+            await db.execute(
+                select(User.id, User.name).where(User.id.in_(agent_ids or {0}))
+            )
+        ).all()
+    }
+
     online = set(manager.online_user_ids)
     agent_ids = set(
         (
@@ -111,6 +138,8 @@ async def stats(db: DbSession) -> dict:
                 "message_type": message.message_type,
                 "private": message.private,
                 "content": (message.content or "")[:180],
+                "contact_name": contact_by_conversation.get(message.conversation_id),
+                "agent_name": agent_names.get(message.sender_id or 0),
                 "created_at": iso(message.created_at),
             }
             for message in recent

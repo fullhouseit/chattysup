@@ -1,16 +1,13 @@
 /**
  * Application routes.
  *
- * The contacts and admin screens live in sibling folders owned by another part
- * of the codebase; they are loaded lazily through {@link lazyPage}, which falls
- * back to a "Coming soon" placeholder if a module cannot be resolved so the app
- * always boots.
+ * The contacts and admin screens are code-split: they are only fetched when an
+ * agent actually navigates to them, which keeps the conversation bundle small.
  */
-import { Suspense, lazy, type ComponentType, type ReactNode } from "react";
+import { Suspense, lazy, type ReactNode } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
-import { Hammer } from "lucide-react";
 import { AppShell } from "@/components/layout/AppShell";
-import { EmptyState, PageSpinner } from "@/components/ui";
+import { PageSpinner } from "@/components/ui";
 import { useAuth } from "@/store/auth";
 import ConversationsPage from "@/pages/Conversations";
 import LoginPage from "@/pages/Login";
@@ -18,73 +15,27 @@ import NotFoundPage from "@/pages/NotFound";
 import ProfilePage from "@/pages/Profile";
 import RegisterPage from "@/pages/Register";
 
-/* ------------------------------------------------------------ lazy loader */
+/* ---------------------------------------------------- code-split screens */
 
-function ComingSoon({ name }: { name: string }) {
-  return (
-    <div className="flex h-full w-full items-center justify-center">
-      <EmptyState
-        icon={<Hammer />}
-        title={`${name} is coming soon`}
-        description="This screen has not been built yet."
-      />
-    </div>
-  );
-}
-
-/** `React.lazy` that degrades to a placeholder instead of crashing the app. */
-function lazyPage(loader: () => Promise<any>, name: string) {
-  return lazy(async () => {
-    try {
-      const module = await loader();
-      const component = (module?.default ?? module?.[name]) as ComponentType<any> | undefined;
-      if (component) return { default: component };
-    } catch {
-      /* module missing — fall through to the placeholder */
-    }
-    return { default: () => <ComingSoon name={name} /> };
-  });
-}
-
-/* eslint-disable @typescript-eslint/ban-ts-comment */
-// @ts-ignore -- provided by the contacts screens
-const ContactsPage = lazyPage(() => import("./pages/contacts/ContactsPage"), "Contacts");
-// @ts-ignore -- provided by the contacts screens
-const ContactDetailPage = lazyPage(() => import("./pages/contacts/ContactDetailPage"), "Contact");
-// @ts-ignore -- provided by the admin screens
-const AdminLayout = lazyPage(() => import("./pages/admin/AdminLayout"), "Administration");
-// @ts-ignore -- provided by the admin screens
-const DashboardPage = lazyPage(() => import("./pages/admin/DashboardPage"), "Dashboard");
-// @ts-ignore -- provided by the admin screens
-const InboxesPage = lazyPage(() => import("./pages/admin/InboxesPage"), "Inboxes");
-// @ts-ignore -- provided by the admin screens
-const InboxNewPage = lazyPage(() => import("./pages/admin/InboxNewPage"), "New inbox");
-// @ts-ignore -- provided by the admin screens
-const InboxDetailPage = lazyPage(() => import("./pages/admin/InboxDetailPage"), "Inbox");
-// @ts-ignore -- provided by the admin screens
-const AgentsPage = lazyPage(() => import("./pages/admin/AgentsPage"), "Agents");
-// @ts-ignore -- provided by the admin screens
-const TeamsPage = lazyPage(() => import("./pages/admin/TeamsPage"), "Teams");
-// @ts-ignore -- provided by the admin screens
-const LabelsPage = lazyPage(() => import("./pages/admin/LabelsPage"), "Labels");
-const CannedResponsesPage = lazyPage(
-  // @ts-ignore -- provided by the admin screens
-  () => import("./pages/admin/CannedResponsesPage"),
-  "Canned responses",
-);
-// @ts-ignore -- provided by the admin screens
-const AutomationsPage = lazyPage(() => import("./pages/admin/AutomationsPage"), "Automations");
-// @ts-ignore -- provided by the admin screens
-const WebhooksPage = lazyPage(() => import("./pages/admin/WebhooksPage"), "Webhooks");
-// @ts-ignore -- provided by the admin screens
-const ApiTokensPage = lazyPage(() => import("./pages/admin/ApiTokensPage"), "API tokens");
-// @ts-ignore -- provided by the admin screens
-const SsoPage = lazyPage(() => import("./pages/admin/SsoPage"), "Single sign-on");
-// @ts-ignore -- provided by the admin screens
-const SettingsPage = lazyPage(() => import("./pages/admin/SettingsPage"), "Settings");
-/* eslint-enable @typescript-eslint/ban-ts-comment */
+const ContactsPage = lazy(() => import("./pages/contacts/ContactsPage"));
+const ContactDetailPage = lazy(() => import("./pages/contacts/ContactDetailPage"));
+const AdminLayout = lazy(() => import("./pages/admin/AdminLayout"));
+const DashboardPage = lazy(() => import("./pages/admin/DashboardPage"));
+const InboxesPage = lazy(() => import("./pages/admin/InboxesPage"));
+const InboxNewPage = lazy(() => import("./pages/admin/InboxNewPage"));
+const InboxDetailPage = lazy(() => import("./pages/admin/InboxDetailPage"));
+const AgentsPage = lazy(() => import("./pages/admin/AgentsPage"));
+const TeamsPage = lazy(() => import("./pages/admin/TeamsPage"));
+const LabelsPage = lazy(() => import("./pages/admin/LabelsPage"));
+const CannedResponsesPage = lazy(() => import("./pages/admin/CannedResponsesPage"));
+const AutomationsPage = lazy(() => import("./pages/admin/AutomationsPage"));
+const WebhooksPage = lazy(() => import("./pages/admin/WebhooksPage"));
+const ApiTokensPage = lazy(() => import("./pages/admin/ApiTokensPage"));
+const SsoPage = lazy(() => import("./pages/admin/SsoPage"));
+const SettingsPage = lazy(() => import("./pages/admin/SettingsPage"));
 
 /* --------------------------------------------------------------- guards */
+
 
 /** Redirects to `/login` when signed out, and to `/conversations` when the
  *  route requires an administrator. */

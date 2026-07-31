@@ -143,8 +143,14 @@ self-documenting at `/api/docs`.
 ## Tests
 
 ```bash
-cd backend && python -m pytest -q
+cd backend && pip install -r requirements-dev.txt && python -m pytest -q
 cd frontend && npx tsc --noEmit
+```
+
+To explore the UI without connecting a real bot, load the demo dataset:
+
+```bash
+cd backend && python scripts/seed_demo.py    # demo@chattysup.local / demo1234
 ```
 
 ## License

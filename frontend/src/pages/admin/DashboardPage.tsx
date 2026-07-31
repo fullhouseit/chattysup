@@ -66,13 +66,18 @@ function StatCard({ label, value, icon: Icon, tone, to, hint }: StatCardProps) {
   );
 }
 
-/** Human sentence for one `recent_activity` entry, whatever keys it carries. */
+/** Human sentence for one `recent_activity` entry: who said what. */
 function activityLine(entry: Record<string, any>): string {
-  if (typeof entry.text === "string") return entry.text;
-  if (typeof entry.message === "string") return entry.message;
-  const contact = entry.contact_name ?? entry.contact ?? "Someone";
-  const inbox = entry.inbox_name ?? entry.inbox;
-  return inbox ? `${contact} — ${inbox}` : String(contact);
+  const contact = entry.contact_name ?? "a contact";
+  const who =
+    entry.message_type === "outgoing"
+      ? `${entry.agent_name ?? "Automation"} → ${contact}`
+      : entry.message_type === "activity"
+        ? contact
+        : contact;
+  const preview = String(entry.content ?? "").trim();
+  const note = entry.private ? " (private note)" : "";
+  return preview ? `${who}${note}: ${preview}` : `${who}${note}`;
 }
 
 export function DashboardPage() {
