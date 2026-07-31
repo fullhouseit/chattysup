@@ -75,6 +75,11 @@ class Webhook(Base, TimestampMixin):
     subscriptions: Mapped[list] = mapped_column(JSON, default=list)
     #: Used to sign payloads with ``X-ChattySup-Signature`` (HMAC-SHA256).
     secret: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: Wire format of the delivered body. ``"native"`` is our own shape (event
+    #: names like ``message.created``); ``"chatwoot"`` emits Chatwoot's
+    #: ``webhook_data`` payloads and Chatwoot event names, in which case
+    #: ``subscriptions`` holds Chatwoot event names instead of ours.
+    payload_format: Mapped[str] = mapped_column(String(32), default="native")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     inbox_id: Mapped[int | None] = mapped_column(
         ForeignKey("inboxes.id", ondelete="CASCADE"), nullable=True

@@ -15,7 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 logger = logging.getLogger(__name__)
 
 # (id, sql) pairs applied in order. Never edit an applied step — append a new one.
-STEPS: list[tuple[str, str]] = []
+STEPS: list[tuple[str, str]] = [
+    (
+        "0001_webhooks_payload_format",
+        "ALTER TABLE webhooks ADD COLUMN payload_format VARCHAR(32) "
+        "NOT NULL DEFAULT 'native'",
+    ),
+]
 
 
 async def run_migrations(engine: AsyncEngine) -> None:
