@@ -17,9 +17,11 @@ from .base import (  # noqa: F401
     register,
     registry,
 )
+from .api_channel import ApiChannel  # noqa: F401
 from .telegram import TelegramChannel  # noqa: F401
 
 __all__ = [
+    "ApiChannel",
     "BaseChannel",
     "ChannelConfigError",
     "ChannelError",
