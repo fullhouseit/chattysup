@@ -280,8 +280,26 @@ class TelegramChannel(BaseChannel):
             )
             return {"mode": "webhook", "webhook_url": self.webhook_url}
 
-        await self.api.call("deleteWebhook", drop_pending_updates=False)
-        return {"mode": "polling"}
+        # Polling mode. A webhook left over from a previous owner of this bot
+        # makes getUpdates fail with 409 forever, so always clear it — and drop
+        # the backlog here, at connect time, rather than on the first poll.
+        # Skipping it later would swallow whatever the user sends while the
+        # inbox is starting up.
+        info = await self.api.call("getWebhookInfo") or {}
+        previous_url = info.get("url") or ""
+        drop_pending = bool(self.config.get("skip_old_updates", True))
+        await self.api.call("deleteWebhook", drop_pending_updates=drop_pending)
+        if previous_url:
+            logger.info(
+                "inbox %s: removed stale Telegram webhook %s",
+                self.inbox.id,
+                previous_url,
+            )
+        return {
+            "mode": "polling",
+            "previous_webhook": previous_url,
+            "dropped_pending_updates": drop_pending,
+        }
 
     async def teardown(self) -> None:
         """Remove the webhook so the bot can be reused elsewhere."""
@@ -292,14 +310,55 @@ class TelegramChannel(BaseChannel):
 
     async def health_check(self) -> dict[str, Any]:
         me = await self.api.call("getMe")
-        return {
+        info = await self.api.call("getWebhookInfo") or {}
+        webhook_url = info.get("url") or ""
+        polling = self.inbox.mode == InboxMode.POLLING.value
+
+        result: dict[str, Any] = {
             "status": "ok",
             "username": me.get("username"),
             "id": me.get("id"),
             "name": me.get("first_name"),
+            "webhook_url": webhook_url,
+            "pending_update_count": info.get("pending_update_count", 0),
         }
+        if info.get("last_error_message"):
+            result["last_error_message"] = info["last_error_message"]
+
+        # A webhook and long polling are mutually exclusive upstream: while one
+        # is registered, getUpdates only ever answers 409.
+        if polling and webhook_url:
+            result["status"] = "warning"
+            result["warning"] = (
+                f"A webhook is still registered for this bot ({webhook_url}), which "
+                "blocks long polling. Save the inbox again to remove it."
+            )
+        elif not polling and not webhook_url:
+            result["status"] = "warning"
+            result["warning"] = (
+                "This inbox is in webhook mode but Telegram has no webhook registered. "
+                "Save the inbox again to re-register it."
+            )
+        return result
 
     # -- inbound ---------------------------------------------------------
+    async def _get_updates(self, offset: int | None) -> list[dict[str, Any]]:
+        """One ``getUpdates`` long poll."""
+        return await self.api.call(
+            "getUpdates",
+            offset=offset,
+            timeout=POLL_TIMEOUT,
+            allowed_updates=self.allowed_updates,
+            # Give the socket more room than the long-poll window itself.
+            http_timeout=POLL_TIMEOUT + 15,
+        ) or []
+
+    @staticmethod
+    def _is_webhook_conflict(exc: ChannelError) -> bool:
+        """``409`` raised because a webhook is still registered for this bot."""
+        text = str(exc).lower()
+        return "[409]" in text or "webhook is active" in text
+
     async def fetch_updates(
         self, cursor: str | None
     ) -> tuple[list[InboundEvent], str | None]:
@@ -310,21 +369,23 @@ class TelegramChannel(BaseChannel):
                 offset = int(cursor) + 1
             except ValueError:
                 logger.warning("invalid telegram cursor %r, restarting", cursor)
-        elif self.config.get("skip_old_updates", True):
-            # First run: acknowledge the backlog so agents are not flooded with
-            # everything that happened while the inbox was offline.
-            skipped = await self.api.call("getUpdates", offset=-1, timeout=0)
-            if skipped:
-                return [], str(skipped[-1]["update_id"])
 
-        updates = await self.api.call(
-            "getUpdates",
-            offset=offset,
-            timeout=POLL_TIMEOUT,
-            allowed_updates=self.allowed_updates,
-            # Give the socket more room than the long-poll window itself.
-            http_timeout=POLL_TIMEOUT + 15,
-        )
+        # The backlog is dropped once in setup(); from here on every update is
+        # delivered, so nothing the contact sends can go missing.
+        try:
+            updates = await self._get_updates(offset)
+        except ChannelError as exc:
+            if not self._is_webhook_conflict(exc):
+                raise
+            # Someone re-registered a webhook behind our back (or setup() never
+            # ran for this inbox). Clear it and carry on instead of backing off
+            # forever with a 409.
+            logger.warning(
+                "inbox %s: getUpdates blocked by an active webhook, removing it",
+                self.inbox.id,
+            )
+            await self.api.call("deleteWebhook", drop_pending_updates=False)
+            updates = await self._get_updates(offset)
 
         events: list[InboundEvent] = []
         next_cursor = cursor
@@ -857,10 +918,21 @@ class TelegramChannel(BaseChannel):
 
     @staticmethod
     def _result(results: list[dict[str, Any]]) -> SendResult:
-        """Wrap Bot API ``Message`` results into a :class:`SendResult`."""
-        ids = [str(r.get("message_id")) for r in results if r and r.get("message_id")]
+        """Wrap Bot API ``Message`` results into a :class:`SendResult`.
+
+        Anything that is not a ``Message`` object is ignored rather than
+        crashing, so an unexpected payload surfaces as a readable delivery
+        error instead of an ``AttributeError`` deep in the send path.
+        """
+        ids = [
+            str(r["message_id"])
+            for r in results
+            if isinstance(r, dict) and r.get("message_id") is not None
+        ]
         if not ids:
-            raise ChannelError("Telegram did not return a message id")
+            raise ChannelError(
+                f"Telegram did not return a message id (got {results!r:.200})"
+            )
         attributes: dict[str, Any] = {"telegram": {"message_ids": ids}}
         if len(ids) > 1:
             attributes["extra_source_ids"] = ids[1:]
