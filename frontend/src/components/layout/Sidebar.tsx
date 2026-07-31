@@ -20,7 +20,6 @@ import {
   Search,
   Settings,
   Sun,
-  Tag,
   Trash2,
   UserCircle2,
   Users,

@@ -74,7 +74,6 @@ export function Dropdown({
           role="menu"
         >
           {typeof children === "function" ? children({ close }) : children}
-          <div className="contents" onClick={close} />
         </div>
       )}
     </div>
