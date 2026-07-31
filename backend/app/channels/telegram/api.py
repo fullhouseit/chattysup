@@ -67,6 +67,47 @@ class TelegramApi:
             await self._client.aclose()
         self._client = None
 
+    # -- diagnostics -----------------------------------------------------
+    def _transport_error(self, method: str, exc: Exception) -> str:
+        """Describe a network failure in terms an operator can act on.
+
+        ``httpx`` transport exceptions frequently carry an empty ``str()`` (a
+        bare ``ConnectError('')`` for a refused socket, for instance), so the
+        exception class and the current proxy have to be spelled out or the
+        message degrades to "failed: " and tells nobody anything.
+        """
+        detail = str(exc).strip() or exc.__class__.__name__
+        via = f" via proxy {self._safe_proxy()}" if self.proxy else " (no proxy configured)"
+
+        if isinstance(exc, httpx.ProxyError):
+            return (
+                f"Telegram {method} failed: could not reach api.telegram.org through "
+                f"the proxy {self._safe_proxy()} — {detail}"
+            )
+        if isinstance(exc, httpx.ConnectTimeout | httpx.ReadTimeout | httpx.WriteTimeout):
+            return f"Telegram {method} timed out after {self.timeout:g}s{via} — {detail}"
+        if isinstance(exc, httpx.ConnectError):
+            return (
+                f"Telegram {method} failed: cannot connect to api.telegram.org{via} — "
+                f"{detail}. Check outbound network access, or configure a proxy for "
+                f"this inbox if Telegram is blocked from this host."
+            )
+        return f"Telegram {method} failed{via}: {detail}"
+
+    def _safe_proxy(self) -> str:
+        """The proxy URL with any password redacted, safe to show in the UI."""
+        if not self.proxy:
+            return ""
+        try:
+            url = httpx.URL(self.proxy)
+        except Exception:  # pragma: no cover - malformed URL, show the scheme only
+            return "(configured)"
+        if url.password:
+            # `copy_with(password=…)` alone rewrites the whole userinfo and
+            # would drop the username, so pass both.
+            url = url.copy_with(username=url.username, password="***")
+        return str(url)
+
     # -- requests --------------------------------------------------------
     async def call(
         self,
@@ -106,7 +147,7 @@ class TelegramApi:
                     f"/{method}", json=payload, timeout=request_timeout
                 )
         except httpx.HTTPError as exc:
-            raise ChannelError(f"Telegram {method} failed: {exc}") from exc
+            raise ChannelError(self._transport_error(method, exc)) from exc
 
         try:
             body = response.json()
@@ -150,5 +191,5 @@ class TelegramApi:
             response = await self.client.get(self.file_url(file_path))
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise ChannelError(f"Telegram file download failed: {exc}") from exc
+            raise ChannelError(self._transport_error("file download", exc)) from exc
         return response.content

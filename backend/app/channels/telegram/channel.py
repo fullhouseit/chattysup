@@ -239,18 +239,21 @@ class TelegramChannel(BaseChannel):
 
     # -- lifecycle -------------------------------------------------------
     @classmethod
-    async def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:
+    async def validate_config(
+        cls, config: dict[str, Any], *, proxy: str | None = None
+    ) -> dict[str, Any]:
         """Check the token against ``getMe`` and enrich the config with bot identity."""
-        config = await super().validate_config(config)
+        config = await super().validate_config(config, proxy=proxy)
         token = str(config.get("bot_token") or "").strip()
         if not token:
             raise ChannelConfigError("Field 'Bot token' is required")
 
-        api = TelegramApi(token, proxy=settings.http_proxy, timeout=15.0)
+        # Validate through the same proxy the inbox will use at runtime.
+        api = TelegramApi(token, proxy=proxy or settings.http_proxy, timeout=15.0)
         try:
             me = await api.call("getMe")
         except ChannelError as exc:
-            raise ChannelConfigError(f"Telegram rejected the bot token: {exc}") from exc
+            raise ChannelConfigError(str(exc)) from exc
         finally:
             await api.aclose()
 

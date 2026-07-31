@@ -162,8 +162,17 @@ class BaseChannel(abc.ABC):
 
     # -- lifecycle -------------------------------------------------------
     @classmethod
-    async def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:
-        """Validate/normalise raw form input. Raises :class:`ChannelConfigError`."""
+    async def validate_config(
+        cls, config: dict[str, Any], *, proxy: str | None = None
+    ) -> dict[str, Any]:
+        """Validate/normalise raw form input. Raises :class:`ChannelConfigError`.
+
+        ``proxy`` is the inbox-level proxy the operator just entered. It is not
+        part of ``config``, yet any implementation that reaches the provider to
+        verify credentials must honour it — otherwise validation would go out
+        directly and fail on networks that only reach the provider through the
+        proxy.
+        """
         for spec in cls.config_fields:
             if spec.required and not config.get(spec.key):
                 raise ChannelConfigError(f"Field '{spec.label}' is required")

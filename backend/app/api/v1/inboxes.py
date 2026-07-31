@@ -90,7 +90,11 @@ async def _configure(db: DbSession, inbox: Inbox, config: dict[str, Any]) -> Non
     """Validate the config, run ``setup()`` and record the connection status."""
     channel_cls = get_channel_class(inbox.channel_type)
     try:
-        inbox.config = await channel_cls.validate_config(dict(config or {}))
+        # Validate through the inbox's own proxy: on networks where the
+        # provider is only reachable through it, a direct check would fail.
+        inbox.config = await channel_cls.validate_config(
+            dict(config or {}), proxy=inbox.proxy_url
+        )
     except ChannelConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
