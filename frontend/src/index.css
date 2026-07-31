@@ -1,0 +1,91 @@
+@import url("https://rsms.me/inter/inter.css");
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-surface-muted text-[14px] text-ink antialiased dark:bg-[#0F141A] dark:text-slate-100;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  * {
+    @apply border-line dark:border-slate-800;
+  }
+
+  ::selection {
+    @apply bg-primary-100 text-primary-900;
+  }
+}
+
+@layer components {
+  /* Thin, unobtrusive scrollbars used across every scroll container. */
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.5) transparent;
+  }
+
+  .scroll-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scroll-thin::-webkit-scrollbar-thumb {
+    background-color: rgba(148, 163, 184, 0.45);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  .scroll-thin::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(100, 116, 139, 0.7);
+    background-clip: content-box;
+  }
+
+  .scroll-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .focus-ring {
+    @apply outline-none ring-primary-300 focus-visible:ring-2 dark:ring-primary-700;
+  }
+
+  /* Rich text rendered inside a message bubble. */
+  .msg-body {
+    @apply whitespace-pre-wrap break-words text-[14px] leading-[21px];
+  }
+
+  .msg-body a {
+    @apply text-primary underline underline-offset-2 hover:text-primary-600;
+  }
+
+  .msg-body code {
+    @apply rounded bg-black/5 px-1 py-0.5 font-mono text-[12px] dark:bg-white/10;
+  }
+
+  .msg-body strong {
+    @apply font-semibold;
+  }
+
+  .msg-body ul {
+    @apply list-disc pl-5;
+  }
+
+  .msg-body ol {
+    @apply list-decimal pl-5;
+  }
+}
