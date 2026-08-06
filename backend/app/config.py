@@ -4,6 +4,7 @@ from __future__ import annotations
 import secrets
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -38,6 +39,19 @@ class Settings(BaseSettings):
     storage_path: str = str(BASE_DIR / "storage")
     max_upload_size: int = 50 * 1024 * 1024
 
+    # --- Email (SMTP) --------------------------------------------------
+    # Leave smtp_host empty to disable outgoing mail entirely. The in-app
+    # toggle (Settings -> Notifications) is a separate, second switch.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    #: ``starttls`` (587, the usual choice), ``ssl`` (465) or ``none`` (25).
+    smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
+    smtp_from_email: str | None = None
+    smtp_from_name: str | None = None
+    smtp_timeout: int = 15
+
     # --- Networking ----------------------------------------------------
     # Global default proxy used by channels when they do not define their own.
     http_proxy: str | None = None
@@ -47,6 +61,20 @@ class Settings(BaseSettings):
     # dedicated worker process (`python -m app.workers.runner`).
     run_workers: bool = True
     automation_tick_seconds: int = 30
+
+    @property
+    def smtp_configured(self) -> bool:
+        """Is there enough configuration to attempt a delivery?"""
+        return bool(self.smtp_host and self.sender_email)
+
+    @property
+    def sender_email(self) -> str | None:
+        """The envelope sender: explicit, else the SMTP username if it is one."""
+        if self.smtp_from_email:
+            return self.smtp_from_email
+        if self.smtp_username and "@" in self.smtp_username:
+            return self.smtp_username
+        return None
 
     @property
     def cors_origin_list(self) -> list[str]:

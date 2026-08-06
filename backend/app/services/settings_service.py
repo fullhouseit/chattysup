@@ -15,6 +15,8 @@ DEFAULTS: dict[str, Any] = {
     "default_locale": "en",
     "logo_url": None,
     "auto_resolve_after_days": 0,
+    # Master switch for outgoing email notifications (SMTP must also be set).
+    "email_notifications_enabled": False,
 }
 
 

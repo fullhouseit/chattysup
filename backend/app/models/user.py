@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import Base, TimestampMixin
@@ -28,6 +36,12 @@ class User(Base, TimestampMixin):
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: Master switch for this agent's own email notifications.
+    email_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: Which events reach the inbox and how often. See
+    #: ``services/notifications.py`` for the defaults and their meaning.
+    notification_settings: Mapped[dict] = mapped_column(JSON, default=dict)
+
     # Identity provider that owns this account ("password" for local users).
     provider: Mapped[str] = mapped_column(String(64), default="password")
     provider_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)

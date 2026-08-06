@@ -16,6 +16,7 @@ from .contacts import (
 )
 from .conversations import ConversationUpdate, LabelAssignment, ParticipantCreate
 from .inboxes import InboxCreate, InboxUpdate
+from .notifications import NotificationPreferences
 from .labels import LabelCreate, LabelUpdate
 from .messages import MessageUpdate, ReactionRequest
 from .settings import SettingsUpdate
@@ -25,6 +26,7 @@ from .users import UserCreate, UserUpdate
 from .webhooks import WebhookCreate, WebhookUpdate
 
 __all__ = [
+    "NotificationPreferences",
     "ApiTokenCreate",
     "AutomationCreate",
     "AutomationUpdate",

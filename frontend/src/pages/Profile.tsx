@@ -13,6 +13,7 @@ import {
   Textarea,
   useToast,
 } from "@/components/ui";
+import { NotificationPreferences } from "@/components/NotificationPreferences";
 
 export function ProfilePage() {
   const { user, updateProfile } = useAuth();
@@ -140,6 +141,8 @@ export function ProfilePage() {
             </Button>
           </div>
         </section>
+
+        <NotificationPreferences />
 
         <section className="rounded-xl border border-line bg-white p-5 shadow-card dark:border-slate-800 dark:bg-slate-900">
           <h3 className="text-sm font-semibold text-ink dark:text-slate-100">

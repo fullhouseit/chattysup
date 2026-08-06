@@ -36,6 +36,8 @@ pluggable source architecture for everything that comes next.
 - Outgoing webhooks (HMAC-signed, native or Chatwoot format), API tokens,
   SSO (OIDC) providers
 - Installation settings, registration flag, dashboard with live stats
+- Email notifications: SMTP from the environment, an in-app switch and
+  per-agent preferences
 
 **Chatwoot compatibility**
 - Outgoing webhooks in Chatwoot's exact payload format and event vocabulary
@@ -116,9 +118,31 @@ All settings come from the environment (see [`.env.example`](.env.example)):
 | `HTTP_PROXY` | – | Default proxy for channels without their own |
 | `RUN_WORKERS` | `true` | Run channel pollers in the API process |
 | `CORS_ORIGINS` | `*` | Comma separated allowed origins |
+| `SMTP_HOST` | – | Mail server; empty disables email notifications |
+| `SMTP_PORT` | `587` | `587` with STARTTLS, `465` with SSL, `25` plain |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | – | Credentials, when the server wants them |
+| `SMTP_SECURITY` | `starttls` | `starttls`, `ssl` or `none` |
+| `SMTP_FROM_EMAIL` | `SMTP_USERNAME` | Envelope sender |
+| `SMTP_FROM_NAME` | app name | Display name on the From header |
 
 To scale the pollers out of the API process, set `RUN_WORKERS=false` and run
 `python -m app.workers.runner` as a second service.
+
+## Email notifications
+
+Agents can be emailed the text of every new message with a link straight to the
+conversation. Three switches, from broad to narrow:
+
+1. **SMTP credentials** in the environment (see the table above). Deliberately
+   not editable from the UI — they are deployment configuration, not content.
+2. **Settings → Email notifications** turns delivery on for the installation and
+   offers a *Send test email* button that reports the real SMTP error.
+3. **Profile → Email notifications** is each agent's own: assigned / unassigned
+   / followed / everyone's conversations, private notes, whether to stay quiet
+   while they have the app open, and a per-conversation frequency cap.
+
+The link points at `BASE_URL/conversations/{id}`. A signed-out recipient lands
+on the login screen and is returned to that conversation afterwards.
 
 ## Architecture
 
