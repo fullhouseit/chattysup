@@ -176,7 +176,7 @@ self-documenting at `/api/docs`.
 
 ```bash
 cd backend && pip install -r requirements-dev.txt && python -m pytest -q
-cd frontend && npx tsc --noEmit
+cd frontend && npx tsc --noEmit && npm test
 ```
 
 To explore the UI without connecting a real bot, load the demo dataset:

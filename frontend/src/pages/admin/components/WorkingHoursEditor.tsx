@@ -77,7 +77,7 @@ export function WorkingHoursEditor({ value, onChange }: WorkingHoursEditorProps)
                     type="checkbox"
                     checked={day.enabled}
                     onChange={(event) => patchDay(index, { enabled: event.target.checked })}
-                    className="h-3.5 w-3.5 rounded border-line text-primary focus:ring-primary-200 dark:border-slate-600 dark:bg-slate-800"
+                    className="h-3.5 w-3.5 accent-primary"
                   />
                   {name}
                 </label>

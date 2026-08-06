@@ -39,15 +39,21 @@ export function Switch({
           disabled && "cursor-not-allowed opacity-50",
         )}
       >
+        {/*
+          `left-0.5` is load-bearing: without an explicit inset the knob is laid
+          out at its browser-decided static position (a centred one inside the
+          button), so the translate below started from the wrong origin and the
+          knob overflowed the track by 14px when on.
+
+          Off  = the 2px inset.  On = track − knob − 2×inset, i.e. 36−16−4 = 16px
+          (`translate-x-4`) and 28−12−4 = 12px (`translate-x-3`), which leaves the
+          same 2px gap on both ends.
+        */}
         <span
           className={cn(
-            "absolute top-0.5 rounded-full bg-white shadow transition-transform",
+            "absolute left-0.5 top-0.5 rounded-full bg-white shadow transition-transform",
             small ? "h-3 w-3" : "h-4 w-4",
-            checked
-              ? small
-                ? "translate-x-3.5"
-                : "translate-x-4"
-              : "translate-x-0.5",
+            checked ? (small ? "translate-x-3" : "translate-x-4") : "translate-x-0",
           )}
         />
       </button>
