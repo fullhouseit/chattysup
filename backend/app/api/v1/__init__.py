@@ -16,6 +16,7 @@ from . import (
     inboxes,
     labels,
     messages,
+    notifications,
     settings,
     sso,
     teams,
@@ -47,6 +48,7 @@ api_router.include_router(inboxes.router)
 api_router.include_router(conversations.router)
 api_router.include_router(messages.router)
 api_router.include_router(messages.attachments_router)
+api_router.include_router(notifications.router)
 api_router.include_router(contacts.router)
 api_router.include_router(labels.router)
 api_router.include_router(canned_responses.router)

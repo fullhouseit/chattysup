@@ -393,6 +393,49 @@ export const settings = {
   update: (payload: Dict) => http.patch<Dict>("/settings", payload),
 };
 
+export interface NotificationPrefs {
+  assigned: boolean;
+  unassigned: boolean;
+  participating: boolean;
+  others: boolean;
+  private_notes: boolean;
+  skip_when_online: boolean;
+  min_interval_seconds: number;
+}
+
+export interface NotificationPrefsResponse {
+  email_notifications: boolean;
+  preferences: NotificationPrefs;
+  defaults: NotificationPrefs;
+}
+
+export interface NotificationStatus {
+  smtp_configured: boolean;
+  enabled: boolean;
+  operational: boolean;
+  reason: string | null;
+  my_email: string | null;
+  my_notifications_enabled: boolean;
+  smtp?: {
+    configured: boolean;
+    host: string | null;
+    port: number;
+    security: string;
+    username: string | null;
+    from_email: string | null;
+    from_name: string;
+    has_password: boolean;
+  };
+}
+
+export const notifications = {
+  status: () => http.get<NotificationStatus>("/notifications/status"),
+  preferences: () => http.get<NotificationPrefsResponse>("/notifications/preferences"),
+  updatePreferences: (payload: Partial<NotificationPrefs> & { email_notifications?: boolean }) =>
+    http.patch<NotificationPrefsResponse>("/notifications/preferences", payload),
+  sendTest: () => http.post<{ status: string; to: string }>("/notifications/test", {}),
+};
+
 /* ------------------------------------------------------------------- admin */
 
 export const adminStats = {
@@ -421,6 +464,7 @@ export const api = {
   apiTokens,
   sso,
   settings,
+  notifications,
   adminStats,
   health,
 };

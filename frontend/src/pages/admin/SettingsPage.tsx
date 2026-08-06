@@ -4,11 +4,12 @@
  */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { settings as settingsApi } from "@/lib/api";
+import { notifications as notificationsApi, settings as settingsApi } from "@/lib/api";
 import type { Dict } from "@/lib/types";
 import { useAuth } from "@/store/auth";
 import { Avatar, Button, Input, PageSpinner, Select, Switch, useToast } from "@/components/ui";
 import { Card, CardHeader } from "./components/Card";
+import { EmailNotificationsCard } from "./components/EmailNotificationsCard";
 import { PageHeader } from "./components/PageHeader";
 
 interface SettingsForm {
@@ -17,6 +18,7 @@ interface SettingsForm {
   default_locale: string;
   enable_registration: boolean;
   auto_resolve_after_days: string;
+  email_notifications_enabled: boolean;
 }
 
 const LOCALES = [
@@ -37,6 +39,7 @@ function formFrom(values: Dict): SettingsForm {
     logo_url: values.logo_url ?? "",
     default_locale: values.default_locale ?? "en",
     enable_registration: Boolean(values.enable_registration),
+    email_notifications_enabled: Boolean(values.email_notifications_enabled),
     auto_resolve_after_days:
       values.auto_resolve_after_days === null || values.auto_resolve_after_days === undefined
         ? "0"
@@ -65,10 +68,14 @@ export function SettingsPage() {
         default_locale: form!.default_locale,
         enable_registration: form!.enable_registration,
         auto_resolve_after_days: Number(form!.auto_resolve_after_days || 0),
+        email_notifications_enabled: form!.email_notifications_enabled,
       }),
     onSuccess: async (next) => {
       toast.success("Settings saved");
       queryClient.setQueryData(["settings"], next);
+      // The notification status derives from this setting, so the profile
+      // screen and this card must re-read it rather than show a stale answer.
+      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
       await refreshConfig();
     },
     onError: (error: Error) => toast.error("Could not save the settings", error.message),
@@ -146,6 +153,13 @@ export function SettingsPage() {
             />
           </div>
         </Card>
+
+        <EmailNotificationsCard
+          enabled={form.email_notifications_enabled}
+          onToggle={(email_notifications_enabled) => patch({ email_notifications_enabled })}
+          statusQuery={notificationsApi.status}
+          sendTest={notificationsApi.sendTest}
+        />
 
         <Card flush>
           <CardHeader

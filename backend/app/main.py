@@ -22,6 +22,7 @@ from .api.v1 import api_router
 from .channels.base import ChannelError
 from .config import settings
 from .db import init_db
+from .services import notifications as notification_service
 from .services import webhooks as webhook_service
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Prepare the database, the event listeners and the channel workers."""
     await init_db()
     webhook_service.install()
+    notification_service.install()
 
     try:
         from . import channels  # noqa: F401  (registers the built-in channels)

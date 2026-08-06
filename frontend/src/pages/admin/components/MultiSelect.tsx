@@ -105,7 +105,7 @@ export function MultiSelect<T extends string | number>({
                 type="checkbox"
                 checked={selected.has(option.value)}
                 onChange={() => toggle(option.value)}
-                className="h-3.5 w-3.5 rounded border-line text-primary focus:ring-primary-200 dark:border-slate-600 dark:bg-slate-800"
+                className="h-3.5 w-3.5 accent-primary"
               />
               {option.icon}
               <span className="min-w-0 flex-1">

@@ -34,6 +34,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..compat import chatwoot
+from . import visibility
 from ..core import events as bus
 from ..core.security import sign_payload
 from ..db import SessionLocal, utcnow
@@ -360,7 +361,7 @@ async def _subject_visible(db: AsyncSession, event: str, payload: dict[str, Any]
     identifier = _identifier(payload, key, fallback)
     if identifier is None:
         return True  # nothing to wait for; let the builder decide
-    return await db.get(model, identifier) is not None
+    return await visibility.is_visible(db, model, identifier)
 
 
 async def _build_chatwoot_bodies(

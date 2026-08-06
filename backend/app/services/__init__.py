@@ -4,7 +4,11 @@ from . import (
     automation,
     avatars,
     conversations,
+    email_templates,
+    mailer,
+    notifications,
     settings_service,
+    visibility,
     webhooks,
 )
 
@@ -13,6 +17,10 @@ __all__ = [
     "automation",
     "avatars",
     "conversations",
+    "email_templates",
+    "mailer",
+    "notifications",
     "settings_service",
+    "visibility",
     "webhooks",
 ]

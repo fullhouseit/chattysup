@@ -21,6 +21,15 @@ STEPS: list[tuple[str, str]] = [
         "ALTER TABLE webhooks ADD COLUMN payload_format VARCHAR(32) "
         "NOT NULL DEFAULT 'native'",
     ),
+    (
+        "0002_users_email_notifications",
+        "ALTER TABLE users ADD COLUMN email_notifications BOOLEAN "
+        "NOT NULL DEFAULT 1",
+    ),
+    (
+        "0003_users_notification_settings",
+        "ALTER TABLE users ADD COLUMN notification_settings JSON",
+    ),
 ]
 
 
