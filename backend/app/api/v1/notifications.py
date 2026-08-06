@@ -74,12 +74,13 @@ async def update_preferences(
 
 
 @router.post("/test", dependencies=[Depends(get_current_admin)])
-async def send_test(user: CurrentUser) -> dict:
+async def send_test(db: DbSession, user: CurrentUser) -> dict:
     """Send a test email to the caller's own address."""
     if not user.email:
         raise HTTPException(status_code=422, detail="Your account has no email address")
     try:
-        await notifications.send_test_email(user)
+        app_name = await settings_service.get(db, "installation_name", None)
+        await notifications.send_test_email(user, app_name)
     except mailer.MailError as exc:
         # A misconfigured mail server is an operator error, not a server fault.
         raise HTTPException(status_code=422, detail=str(exc)) from exc

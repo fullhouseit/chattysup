@@ -158,7 +158,9 @@ async def _dispatch(db: AsyncSession, message: Message) -> int:
     if message.sender_id and message.message_type == MessageType.OUTGOING.value:
         author = await db.get(User, message.sender_id)
 
+    installation_name = await settings_service.get(db, "installation_name", None)
     subject, text_body, html_body = email_templates.render_new_message(
+        app_name=installation_name,
         contact_name=(contact.name if contact else "Unknown contact"),
         inbox_name=(inbox.name if inbox else "Inbox"),
         content=message.content or "",
@@ -264,10 +266,10 @@ async def _candidate_agents(db: AsyncSession, inbox_id: int) -> list[User]:
 # ---------------------------------------------------------------------------
 # Test email
 # ---------------------------------------------------------------------------
-async def send_test_email(user: User) -> None:
+async def send_test_email(user: User, app_name: str | None = None) -> None:
     """Prove the SMTP settings work. Raises :class:`mailer.MailError`."""
     subject, text_body, html_body = email_templates.render_test_email(
-        recipient_name=user.display_name or user.name
+        recipient_name=user.display_name or user.name, app_name=app_name
     )
     await mailer.send_email(
         to=user.email, subject=subject, text_body=text_body, html_body=html_body

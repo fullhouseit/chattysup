@@ -92,6 +92,7 @@ def _shell(*, title: str, inner: str, footer: str) -> str:
 
 def render_new_message(
     *,
+    app_name: str | None = None,
     contact_name: str,
     inbox_name: str,
     content: str,
@@ -101,8 +102,12 @@ def render_new_message(
     author_name: str | None = None,
     sent_at: datetime | None = None,
 ) -> tuple[str, str, str]:
-    """Return ``(subject, text_body, html_body)`` for one new message."""
-    app = settings.app_name
+    """Return ``(subject, text_body, html_body)`` for one new message.
+
+    ``app_name`` is the installation name an administrator set in Settings; it
+    falls back to the ``APP_NAME`` environment default.
+    """
+    app = app_name or settings.app_name
     who = author_name or contact_name
     url = conversation_url(conversation_id)
     attachments = attachments or []
@@ -185,9 +190,11 @@ def render_new_message(
     return subject, text_body, _shell(title=subject, inner=inner, footer=footer)
 
 
-def render_test_email(*, recipient_name: str) -> tuple[str, str, str]:
+def render_test_email(
+    *, recipient_name: str, app_name: str | None = None
+) -> tuple[str, str, str]:
     """A message an admin can send to prove the SMTP settings work."""
-    app = settings.app_name
+    app = app_name or settings.app_name
     subject = f"[{app}] Test email"
     url = app_url("/admin/settings")
 

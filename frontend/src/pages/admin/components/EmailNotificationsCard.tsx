@@ -81,7 +81,7 @@ export function EmailNotificationsCard({
           description="Each agent still controls what reaches their own inbox, on their profile."
         />
 
-        {smtp ? (
+        {smtp && configured ? (
           <div className="rounded-lg border border-line p-3 text-xs dark:border-slate-800">
             <Row label="Host" value={`${smtp.host ?? "—"}:${smtp.port}`} />
             <Row label="Security" value={smtp.security} />

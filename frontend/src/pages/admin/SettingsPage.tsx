@@ -68,10 +68,14 @@ export function SettingsPage() {
         default_locale: form!.default_locale,
         enable_registration: form!.enable_registration,
         auto_resolve_after_days: Number(form!.auto_resolve_after_days || 0),
+        email_notifications_enabled: form!.email_notifications_enabled,
       }),
     onSuccess: async (next) => {
       toast.success("Settings saved");
       queryClient.setQueryData(["settings"], next);
+      // The notification status derives from this setting, so the profile
+      // screen and this card must re-read it rather than show a stale answer.
+      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
       await refreshConfig();
     },
     onError: (error: Error) => toast.error("Could not save the settings", error.message),
